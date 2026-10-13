@@ -26,7 +26,7 @@ try {
     & $NodePath -e "process.exit(Number(process.versions.node.split('.')[0]) >= 22 ? 0 : 1)" *> $null
     if ($LASTEXITCODE -ne 0) { throw 'Install Node.js 22 or later, then launch HybridRef again.' }
     $env:PATH = (Split-Path -Parent $NodePath) + ';' + $env:PATH
-    if ($Demo) { $Project = Join-Path $RepositoryRoot 'Project\Demo\SimpleDemo.hbr' }
+    if ($Demo) { $Project = Join-Path $RepositoryRoot 'Project\Demo\Demo.hbr' }
     if ($Project) { $Project = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Project) }
     Push-Location $ModuleRoot
     try {

@@ -1,4 +1,4 @@
-import type { BrowseResult, HybridRefApi, ImportResult, LoadedBoard, SaveResult } from '../Shared/Types'
+import { EmptyDocument, type BrowseResult, type HybridRefApi, type ImportResult, type LoadedBoard, type SaveResult } from '../Shared/Types'
 import { RequestFilePath } from './FileDialog'
 
 const LastPath = 'hybridref.lastPath'
@@ -38,7 +38,13 @@ export function CreateBrowserApi(): HybridRefApi {
       if (Loaded) Remember(Loaded.path)
       return Loaded
     },
-    async NewProject() { await Post('new'); Remember(null) },
+    async NewProject() {
+      const Name = await RequestFilePath({ mode: 'new', Browse })
+      if (!Name) return null
+      const Result = await Post<SaveResult>('new', { name: Name })
+      Remember(Result.path)
+      return { path: Result.path, document: EmptyDocument(), assets: [] }
+    },
     async Open() {
       const Path = await RequestFilePath({ mode: 'open', initialPath: sessionStorage.getItem(LastPath) || undefined, Browse })
       if (!Path) return null
@@ -47,6 +53,13 @@ export function CreateBrowserApi(): HybridRefApi {
       return Loaded
     },
     async Save(Document, CurrentPath) {
+      if (!CurrentPath && !sessionStorage.getItem(LastPath)) {
+        const Name = await RequestFilePath({ mode: 'new', Browse })
+        if (!Name) return null
+        const Result = await Post<SaveResult>('new', { name: Name, document: Document })
+        Remember(Result.path)
+        return Result
+      }
       const Path = CurrentPath || await RequestFilePath({ mode: 'save', initialPath: sessionStorage.getItem(LastPath) || undefined, Browse })
       if (!Path) return null
       let Result: SaveResult

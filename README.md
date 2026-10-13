@@ -9,7 +9,7 @@
 页面地址为 `http://127.0.0.1:<本地端口>/`，仅在本机监听。再次启动会复用当前版本的服务。推荐使用 Chrome 或 Edge。
 
 ```powershell
-# 打开新的纯图片演示画板
+# 打开 Project/Demo/Demo.hbr 演示画板
 .\Start.cmd -Demo
 
 # 打开自己的画板，也可以把 .hbr 拖到启动器上
@@ -24,6 +24,7 @@
 - 中键或空格拖动平移，滚轮围绕鼠标缩放，F 适应全部图片。
 - 复制、剪切、粘贴、删除、撤销和重做。
 - 黑色界面，没有文字项、侧栏、多画板、音视频、录制或欢迎弹窗。
+- 新建时输入项目名，立即创建 `Project/<Name>/<Name>.hbr` 和同目录的 `<Name>Resource/`，空白项目也会创建资源文件夹。
 - 导入使用浏览器文件选择框；打开/另存为通过网页中的文件窗口选择本地目录和文件名。每个浏览器标签页的图片缓存相互独立。
 
 | 操作 | 快捷键 |
@@ -41,13 +42,15 @@
 
 `D:\参考\TestRef.hbr` 保存为可直接 diff 的 YAML；图片保存在同目录 `TestRefResource\<内容哈希>.png`。文件和资源目录一起移动即可。
 
+默认项目根目录为仓库内的 `Project/`，相对于仓库位置解析，移动整个仓库后仍可使用。每个新项目独占一个同名文件夹，例如项目 `TestRef` 保存为 `Project/TestRef/TestRef.hbr`，图片放入 `Project/TestRef/TestRefResource/`。
+
 所有导入图片统一转为原分辨率的无损压缩 PNG；动画图片只取第一帧。相同图片共用资源。图片内容和解码结果缓存在内存，保存时无需重新读取外部原图。布局存储稳定 ID、相对资源路径和几何数值，不写时间戳；相同状态重复保存保持相同文本。
 
 保存先写资源，再原子替换 YAML；不会自动删除未引用图片，避免误删。只有成功保存才解除未保存标记。第一版缓存常驻内存；新建、打开另一画板会替换当前标签页的缓存，退出本地服务会释放全部缓存。
 
 关闭或刷新有未保存修改的标签页时，浏览器会提醒。先保存，再关闭。服务和文件都留在本机，不需要上传到网站或登录账户。
 
-新版文档 `formatVersion: 2` 只包含 `viewport` 和 `images`。旧版多画板文件不会被简版读写或覆盖，原 `Project/Demo/Demo.hbr` 保留。新演示文件为 `Project/Demo/SimpleDemo.hbr`。
+文档采用 `formatVersion: 2`，画布内容为 `viewport` 和 `images`。旧版多画板文件不会被简版读写或覆盖。演示项目为 `Project/Demo/Demo.hbr`，三张图片资源位于同目录的 `DemoResource/`。`pnpm demo` 可从现有捆绑资源创建缺失的演示项目；已有 `Demo.hbr` 时会拒绝覆盖。
 
 ## 开发
 
@@ -63,7 +66,8 @@ Code/Module/Scripts/           启动和构建脚本
 Code/Module/Runtime/           本机运行状态、日志与测试截图（不进 Git）
 Code/Resource/              图标等资源
 Code/Module/reference/     上一版 Citadel 实现，仅供参考
-Project/Demo/             演示画板及其资源
+Project/Demo/Demo.hbr     演示项目文件
+Project/Demo/DemoResource/ 演示图片资源
 ```
 
 ```powershell

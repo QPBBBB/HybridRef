@@ -34,6 +34,19 @@ function Bytes(DataUrl: string): Buffer { return Buffer.from(DataUrl.split(',')[
 function Hash(Value: Buffer): string { return CreateHash('sha256').update(Value).digest('hex') }
 
 Describe('image-only HybridRef storage', () => {
+  It('creates the resource directory for an empty project and keeps repeated saves deterministic', async () => {
+    const Root = Temp()
+    const Path = Join(Root, 'Empty', 'Empty.hbr')
+    const Store = new ImageStore()
+    await Store.SaveProject(Path, Board())
+    const Before = ReadFileSync(Path, 'utf8')
+    Expect(ReaddirSync(Join(Root, 'Empty')).sort()).toEqual(['Empty.hbr', 'EmptyResource'])
+    Expect(ReaddirSync(Join(Root, 'Empty', 'EmptyResource'))).toEqual([])
+    Expect((await new ImageStore().LoadProject(Path)).document).toEqual(Board())
+    await Store.SaveProject(Path, Board())
+    Expect(ReadFileSync(Path, 'utf8')).toBe(Before)
+  })
+
   It('normalizes JPEG and BMP to compressed PNG with actual dimensions, colors and content ids', async () => {
     const Store = new ImageStore()
     const Bmp = EncodeBmp({ width: 2, height: 1, data: Buffer.from([0, 0, 0, 255, 0, 0, 255, 0]) }).data

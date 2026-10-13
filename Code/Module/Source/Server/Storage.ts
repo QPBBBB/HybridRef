@@ -221,10 +221,8 @@ export class ImageStore {
       await Mkdir(ProjectDir, { recursive: true })
       const ResourceName = `${Basename(Target, Extname(Target))}Resource`
       const ResourceDir = Join(ProjectDir, ResourceName)
-      if (Assets.size) {
-        await Mkdir(ResourceDir, { recursive: true })
-        await GuardedResource(ProjectDir, ResourceDir)
-      }
+      await Mkdir(ResourceDir, { recursive: true })
+      await GuardedResource(ProjectDir, ResourceDir)
       // Validate all existing targets before writing any resource or the YAML.
       const Absent: { path: string; bytes: Buffer }[] = []
       for (const [Id, ImageValue] of Assets) {

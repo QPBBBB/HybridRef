@@ -115,8 +115,12 @@ export default function App(): React.ReactElement {
     if (WorkingRef.current) return
     StartupAllowed.current = false
     if (!MayDiscard()) return
+    const Revision = Session.current
     StartWork()
-    try { await window.HybridRef.NewProject(); Reset(EmptyDocument(), null, []) }
+    try {
+      const Loaded = await window.HybridRef.NewProject()
+      if (Loaded && Session.current === Revision) Reset(Loaded.document, Loaded.path, Loaded.assets)
+    }
     catch (CaughtError) { ShowError(CaughtError) }
     finally { EndWork() }
   }

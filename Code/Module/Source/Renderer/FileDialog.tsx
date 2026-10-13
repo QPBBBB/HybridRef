@@ -2,7 +2,7 @@ import React, { useEffect as UseEffect, useRef as UseRef, useState as UseState, 
 import type { BrowseResult } from '../Shared/Types'
 
 interface FileRequest {
-  mode: 'open' | 'save'
+  mode: 'open' | 'save' | 'new'
   initialPath?: string
   Browse(Path?: string): Promise<BrowseResult>
   Resolve(Path: string | null): void
@@ -33,7 +33,47 @@ const JoinPath = (Directory: string, Name: string): string => `${Directory.repla
 
 export default function FileDialog(): React.ReactElement | null {
   const Active = UseSyncExternalStore(Subscribe, () => Request)
+  if (Active?.mode === 'new') return <NewProjectDialog />
   return Active ? <Dialog key={Active.mode + (Active.initialPath || '')} active={Active} /> : null
+}
+
+function NewProjectDialog(): React.ReactElement {
+  const [Name, SetName] = UseState('未命名')
+  const [CaughtError, SetError] = UseState('')
+  const NameInput = UseRef<HTMLInputElement>(null)
+  const Panel = UseRef<HTMLDivElement>(null)
+  UseEffect(() => {
+    const Previous = document.activeElement as HTMLElement | null
+    NameInput.current?.focus(); NameInput.current?.select()
+    return () => Previous?.focus()
+  }, [])
+  function Confirm(): void {
+    const ProjectName = Name.trim()
+    if (!ProjectName || /[\\/:*?"<>|]/.test(ProjectName) || ProjectName === '.' || ProjectName === '..') {
+      SetError('请输入有效的项目名。'); return
+    }
+    Close(ProjectName)
+  }
+  function KeyDown(InputEvent: React.KeyboardEvent): void {
+    InputEvent.stopPropagation()
+    if (InputEvent.key === 'Escape') { InputEvent.preventDefault(); Close(null) }
+    if (InputEvent.key === 'Tab') {
+      const Items = Array.from(Panel.current!.querySelectorAll<HTMLElement>('button, input'))
+      const First = Items[0], Last = Items[Items.length - 1]
+      if (InputEvent.shiftKey && document.activeElement === First) { InputEvent.preventDefault(); Last?.focus() }
+      else if (!InputEvent.shiftKey && document.activeElement === Last) { InputEvent.preventDefault(); First?.focus() }
+    }
+  }
+  const ProjectName = Name.trim() || '项目名'
+  return <div className="file-dialog-overlay">
+    <div ref={Panel} data-testid="file-dialog" className="file-dialog new-project-dialog" role="dialog" aria-modal="true" aria-labelledby="file-dialog-title" onKeyDown={KeyDown}>
+      <h2 id="file-dialog-title">新建项目</h2>
+      <label className="file-name">项目名<input ref={NameInput} data-testid="file-name" value={Name} onChange={(InputEvent) => { SetName(InputEvent.target.value); SetError('') }} onKeyDown={(InputEvent) => { if (InputEvent.key === 'Enter') { InputEvent.preventDefault(); Confirm() } }} /></label>
+      <p className="file-project-path">项目保存在程序目录下的 Project 文件夹：<br /><span>Project/{ProjectName}/{ProjectName}.hbr</span><br /><span>Project/{ProjectName}/{ProjectName}Resource/</span></p>
+      <div className="file-dialog-status" role="status">{CaughtError}</div>
+      <div className="file-dialog-actions"><button data-testid="file-cancel" onClick={() => Close(null)}>取消</button><button data-testid="file-confirm" className="primary" onClick={Confirm}>创建</button></div>
+    </div>
+  </div>
 }
 
 function Dialog({ active: Active }: { active: FileRequest }): React.ReactElement {

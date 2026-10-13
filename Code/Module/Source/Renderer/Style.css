@@ -56,3 +56,6 @@ button:disabled { color: #595d64; cursor: default; }
 .file-dialog-status { color: #c4ab87; min-height: 17px; font-size: 12px; overflow-wrap: anywhere; }
 .file-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .file-dialog-actions .primary { background: #344b69; border-color: #6586af; color: #f1f5fb; }
+.new-project-dialog { width: min(520px, 94vw); }
+.file-project-path { margin: 0; color: #8d96a5; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.file-project-path span { color: #bac7d9; }

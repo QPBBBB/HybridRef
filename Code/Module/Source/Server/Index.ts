@@ -14,7 +14,8 @@ async function Main(): Promise<void> {
   if (!Number.isInteger(Port) || Port < 0 || Port > 65535) throw new Error('Invalid local server port')
   const [Backend, Frontend] = await Promise.all([Stat(__filename), Stat(Resolve(StaticDir, 'Index.html'))])
   const BuildId = `${Backend.mtimeMs}-${Frontend.mtimeMs}`
-  const Server = CreateAppServer({ staticDir: StaticDir, projectDirectory: Resolve(ModuleRoot, '../../Project'), buildId: BuildId })
+  const ProjectDirectory = Resolve(Argument('--project-directory') ?? Resolve(ModuleRoot, '../../Project'))
+  const Server = CreateAppServer({ staticDir: StaticDir, projectDirectory: ProjectDirectory, buildId: BuildId })
   await new Promise<void>((Done, Fail) => {
     Server.once('error', Fail)
     Server.listen(Port, '127.0.0.1', () => { Server.removeListener('error', Fail); Done() })

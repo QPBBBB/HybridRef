@@ -1,7 +1,7 @@
 import { createServer as CreateServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { readFile as ReadFile, readdir as Readdir, realpath as Realpath, stat as Stat } from 'node:fs/promises'
+import { mkdir as Mkdir, readFile as ReadFile, readdir as Readdir, realpath as Realpath, rmdir as Rmdir, stat as Stat } from 'node:fs/promises'
 import { dirname as Dirname, extname as Extname, isAbsolute as IsAbsolute, join as Join, relative as Relative, resolve as Resolve } from 'node:path'
-import type { BoardDocument } from '../Shared/Types'
+import { EmptyDocument, type BoardDocument } from '../Shared/Types'
 import { ImageStore } from './Storage'
 
 type Options = { staticDir: string; projectDirectory: string; buildId?: string }
@@ -23,6 +23,14 @@ class HttpError extends Error {
 function IsRecord(Value: unknown): Value is Body { return Value !== null && typeof Value === 'object' && !Array.isArray(Value) }
 function IsMissing(CaughtError: unknown): boolean { return (CaughtError as NodeJS.ErrnoException)?.code === 'ENOENT' }
 function Key(Path: string): string { return process.platform === 'win32' ? Path.toLowerCase() : Path }
+function ProjectName(Value: unknown): string {
+  if (typeof Value !== 'string' || !Value || Value.trim() !== Value || Value.length > 247
+    || /[<>:"/\\|?*\u0000-\u001f]/.test(Value) || /[.\s]$/.test(Value)
+    || /^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³]|CLOCK\$|CONIN\$|CONOUT\$)$/i.test(Value.split('.')[0].trimEnd())) {
+    throw new HttpError(400, '请输入有效的项目名称；不能包含路径、特殊字符或 Windows 保留名称。')
+  }
+  return Value
+}
 function Inside(Parent: string, Path: string): boolean {
   const Rel = Relative(Parent, Path)
   return Rel === '' || (!IsAbsolute(Rel) && Rel !== '..' && !Rel.startsWith('../') && !Rel.startsWith('..\\'))
@@ -176,8 +184,37 @@ export function CreateAppServer(Options: Options): Server {
 
   async function Api(Path: string, Body: Body, Session: Session): Promise<unknown> {
     if (Path === '/api/ping') return {}
-    if (Path === '/api/browse') return Browse(Body.path === undefined ? ProjectDirectory : PathFrom(Body.path), ProjectDirectory)
-    if (Path === '/api/new') { Session.store.Clear(); Session.currentPath = null; return {} }
+    if (Path === '/api/browse') {
+      if (Body.path === undefined) await Mkdir(ProjectDirectory, { recursive: true })
+      return Browse(Body.path === undefined ? ProjectDirectory : PathFrom(Body.path), ProjectDirectory)
+    }
+    if (Path === '/api/new') {
+      const Name = ProjectName(Body.name)
+      const Directory = Join(ProjectDirectory, Name)
+      const Target = Join(Directory, `${Name}.hbr`)
+      return WithWriteLock(Target, async () => {
+        await Mkdir(ProjectDirectory, { recursive: true })
+        try { await Mkdir(Directory) }
+        catch (CaughtError) {
+          if ((CaughtError as NodeJS.ErrnoException)?.code === 'EEXIST') throw new HttpError(409, '同名项目已存在，请使用其他名称。', 'EXISTS')
+          throw CaughtError
+        }
+        const Store = Body.document === undefined ? new ImageStore() : Session.store
+        try { await Store.SaveProject(Target, Body.document === undefined ? EmptyDocument() : Body.document as BoardDocument) }
+        catch (CaughtError) {
+          // Remove only our still-empty reservation; never erase a partially
+          // written project or anything another process has added to it.
+          await Rmdir(Directory).catch(() => {})
+          throw CaughtError
+        }
+        if (Store !== Session.store) {
+          Session.store.Clear()
+          Session.store = Store
+        }
+        Session.currentPath = Target
+        return { path: Target }
+      })
+    }
     if (Path === '/api/startup' || Path === '/api/open') {
       if (Path === '/api/startup' && (Body.path === undefined || Body.path === null)) return null
       const Result = await Session.store.LoadProject(PathFrom(Body.path))

@@ -1,0 +1,25 @@
+format: "hybridref"
+formatVersion: 2
+viewport:
+  x: 90
+  y: 180
+  zoom: 1
+images:
+  - id: "reference-1"
+    asset: "DemoResource/b9b4555658328d36518972aee01d58acb5c39a17716963972520ca9281734cf9.png"
+    x: 0
+    y: 0
+    width: 350
+    height: 245
+  - id: "reference-2"
+    asset: "DemoResource/37b61024ed7874628cc207866ac803b34a988f00043ba76960e837d749c4a8e7.png"
+    x: 380
+    y: 100
+    width: 350
+    height: 245
+  - id: "reference-3"
+    asset: "DemoResource/34587a2000894e7ca981cfdeaf8bcd4e2f52e7e1328c455747bbf86de210d9cb.png"
+    x: 760
+    y: 0
+    width: 350
+    height: 350

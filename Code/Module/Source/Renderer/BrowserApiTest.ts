@@ -59,11 +59,59 @@ Describe('browser API', () => {
     Expect(window.location.search).toBe('')
   })
 
-  It('clears the server store and last path when starting a new board', async () => {
+  It('creates a named project and remembers its saved path', async () => {
     Stored.set('hybridref.lastPath', 'D:/Old.hbr')
-    Response({ ok: true })
-    await CreateBrowserApi().NewProject()
+    PathDialog.mockResolvedValueOnce('新参考')
+    const Path = 'D:/Git/HybridRef/Project/新参考/新参考.hbr'
+    Response({ path: Path })
+    Expect(await CreateBrowserApi().NewProject()).toEqual({ path: Path, document: EmptyDocument(), assets: [] })
+    Expect(PathDialog).toHaveBeenCalledWith(Expect.objectContaining({ mode: 'new' }))
     Expect(Request().endpoint).toBe('/api/new')
+    Expect(Request().body).toEqual({ name: '新参考' })
+    Expect(Stored.get('hybridref.lastPath')).toBe(Path)
+  })
+
+  It('keeps the current project when new project naming is cancelled', async () => {
+    Stored.set('hybridref.lastPath', 'D:/Old.hbr')
+    PathDialog.mockResolvedValueOnce(null)
+    Expect(await CreateBrowserApi().NewProject()).toBeNull()
+    Expect(FetchMock).not.toHaveBeenCalled()
+    Expect(Stored.get('hybridref.lastPath')).toBe('D:/Old.hbr')
+  })
+
+  It('keeps the last path when creating a project fails', async () => {
+    Stored.set('hybridref.lastPath', 'D:/Old.hbr')
+    PathDialog.mockResolvedValueOnce('已存在')
+    Response({ error: '项目已存在', code: 'EXISTS' }, 409)
+    await Expect(CreateBrowserApi().NewProject()).rejects.toThrow('项目已存在')
+    Expect(Stored.get('hybridref.lastPath')).toBe('D:/Old.hbr')
+    Expect(window.confirm).not.toHaveBeenCalled()
+  })
+
+  It('creates a project with imported images on the first save of an untitled board', async () => {
+    const Document = EmptyDocument()
+    Document.images.push({ id: 'Image', asset: 'Asset', x: 15, y: 30, width: 320, height: 200 })
+    const Path = 'D:/Git/HybridRef/Project/参考/参考.hbr'
+    PathDialog.mockResolvedValueOnce('参考')
+    Response({ path: Path })
+    Expect(await CreateBrowserApi().Save(Document, null)).toEqual({ path: Path })
+    Expect(PathDialog).toHaveBeenCalledWith(Expect.objectContaining({ mode: 'new' }))
+    Expect(Request().endpoint).toBe('/api/new')
+    Expect(Request().body).toEqual({ name: '参考', document: Document })
+    Expect(Stored.get('hybridref.lastPath')).toBe(Path)
+  })
+
+  It('keeps an untitled board unsaved when the first save is cancelled', async () => {
+    PathDialog.mockResolvedValueOnce(null)
+    Expect(await CreateBrowserApi().Save(EmptyDocument(), null)).toBeNull()
+    Expect(FetchMock).not.toHaveBeenCalled()
+    Expect(Stored.has('hybridref.lastPath')).toBe(false)
+  })
+
+  It('does not remember an unsaved project when its first save fails', async () => {
+    PathDialog.mockResolvedValueOnce('无效项目')
+    Response({ error: '无法创建项目' }, 400)
+    await Expect(CreateBrowserApi().Save(EmptyDocument(), null)).rejects.toThrow('无法创建项目')
     Expect(Stored.has('hybridref.lastPath')).toBe(false)
   })
 
@@ -76,6 +124,7 @@ Describe('browser API', () => {
   })
 
   It('asks before overwriting a destination chosen in Save As', async () => {
+    Stored.set('hybridref.lastPath', 'D:/Open.hbr')
     PathDialog.mockResolvedValueOnce('D:/Existing.hbr')
     Response({ error: '文件已存在', code: 'EXISTS' }, 409)
     Response({ path: 'D:/Existing.hbr' })
@@ -87,11 +136,24 @@ Describe('browser API', () => {
   })
 
   It('does not overwrite when the user cancels confirmation', async () => {
+    Stored.set('hybridref.lastPath', 'D:/Open.hbr')
     PathDialog.mockResolvedValueOnce('D:/Existing.hbr')
     Vi.mocked(window.confirm).mockReturnValueOnce(false)
     Response({ error: '文件已存在', code: 'EXISTS' }, 409)
     Expect(await CreateBrowserApi().Save(EmptyDocument(), null)).toBeNull()
     Expect(FetchMock).toHaveBeenCalledTimes(1)
+    Expect(Stored.get('hybridref.lastPath')).toBe('D:/Open.hbr')
+  })
+
+  It('allows Save As to choose a destination outside the default project folder', async () => {
+    Stored.set('hybridref.lastPath', 'D:/Git/HybridRef/Project/参考/参考.hbr')
+    PathDialog.mockResolvedValueOnce('E:/参考/副本.hbr')
+    Response({ path: 'E:/参考/副本.hbr' })
+    await CreateBrowserApi().Save(EmptyDocument(), null)
+    Expect(PathDialog).toHaveBeenCalledWith(Expect.objectContaining({ mode: 'save', initialPath: 'D:/Git/HybridRef/Project/参考/参考.hbr' }))
+    Expect(Request().endpoint).toBe('/api/save')
+    Expect(Request().body).toEqual({ path: 'E:/参考/副本.hbr', document: EmptyDocument(), overwrite: false })
+    Expect(Stored.get('hybridref.lastPath')).toBe('E:/参考/副本.hbr')
   })
 
   It('saves an already opened file directly without another file dialog', async () => {

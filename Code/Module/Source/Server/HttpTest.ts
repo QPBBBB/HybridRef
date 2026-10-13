@@ -1,5 +1,5 @@
 import { randomUUID as RandomUUID } from 'node:crypto'
-import { mkdtempSync as MkdtempSync, mkdirSync as MkdirSync, readFileSync as ReadFileSync, rmSync as RmSync, symlinkSync as SymlinkSync, writeFileSync as WriteFileSync } from 'node:fs'
+import { existsSync as ExistsSync, mkdtempSync as MkdtempSync, mkdirSync as MkdirSync, readFileSync as ReadFileSync, readdirSync as ReaddirSync, rmSync as RmSync, symlinkSync as SymlinkSync, writeFileSync as WriteFileSync } from 'node:fs'
 import { request as Request, type Server } from 'node:http'
 import { tmpdir as Tmpdir } from 'node:os'
 import { join as Join, resolve as Resolve } from 'node:path'
@@ -7,6 +7,7 @@ import Sharp from 'sharp'
 import { afterEach as AfterEach, describe as Describe, expect as Expect, it as It, vi as Vi } from 'vitest'
 import { EmptyDocument, type BoardDocument } from '../Shared/Types'
 import { CreateAppServer } from './Http'
+import { ImageStore } from './Storage'
 
 const Directories: string[] = []
 const Servers: Server[] = []
@@ -23,12 +24,12 @@ AfterEach(async () => {
     RmSync(Path, { recursive: true, force: true })
   }
 })
-async function App() {
+async function App(CreateProjectDirectory = true) {
   const Root = Temp()
   const StaticDir = Join(Root, 'web')
   const ProjectDirectory = Join(Root, 'Project')
   MkdirSync(StaticDir)
-  MkdirSync(ProjectDirectory)
+  if (CreateProjectDirectory) MkdirSync(ProjectDirectory)
   WriteFileSync(Join(StaticDir, 'Index.html'), '<!doctype html><title>HybridRef</title>')
   WriteFileSync(Join(StaticDir, 'app.js'), 'console.log("browser")')
   const Server = CreateAppServer({ staticDir: StaticDir, projectDirectory: ProjectDirectory, buildId: 'test-build' })
@@ -107,7 +108,7 @@ Describe('local browser HTTP server', () => {
     const Loaded = await Call('/api/open', { path: Path }, { session: SecondTab })
     Expect(Loaded.body.document).toEqual(Document)
     Expect(Loaded.body.assets).toEqual(Imported.body.assets)
-    Expect((await Call('/api/new', {}, { session: SecondTab })).body).toEqual({})
+    Expect((await Call('/api/new', { name: 'Cleared' }, { session: SecondTab })).body).toEqual({ path: Join(ProjectDirectory, 'Cleared', 'Cleared.hbr') })
     Expect((await Call('/api/save', { path: Join(ProjectDirectory, 'Cleared.hbr'), document: Document }, { session: SecondTab })).status).toBe(400)
     Expect((await Call('/api/save', { path: Path, document: Document })).status).toBe(200)
     const Startup = await Call('/api/startup', { path: Path }, { session: RandomUUID() })
@@ -148,7 +149,7 @@ Describe('local browser HTTP server', () => {
     const Path = Join(ProjectDirectory, 'AfterSleep.hbr')
     Expect((await Call('/api/save', { path: Path, document: Document })).status).toBe(200)
     Now += 48 * 60 * 60 * 1000
-    Expect((await Call('/api/new', {}, { session: RandomUUID() })).status).toBe(200)
+    Expect((await Call('/api/new', { name: 'Awake' }, { session: RandomUUID() })).status).toBe(200)
     Expect((await Call('/api/ping', {})).status).toBe(200)
     Expect((await Call('/api/save', { path: Path, document: Document })).status).toBe(200)
   })
@@ -161,6 +162,107 @@ Describe('local browser HTTP server', () => {
       Call('/api/save', { path: Path, document: EmptyDocument() }, { session: RandomUUID() }),
     ])
     Expect(Results.map((Result) => Result.status).sort()).toEqual([200, 409])
+  })
+
+  It('creates named projects beneath Project with their YAML and resource folder, even before any import', async () => {
+    const { call: Call, projectDirectory: ProjectDirectory } = await App(false)
+    const Name = '参考 #%25'
+    const Directory = Join(ProjectDirectory, Name)
+    const Path = Join(Directory, `${Name}.hbr`)
+    const Created = await Call('/api/new', { name: Name })
+    Expect(Created.status).toBe(200)
+    Expect(Created.body).toEqual({ path: Path })
+    Expect(ReaddirSync(Directory).sort()).toEqual([`${Name}.hbr`, `${Name}Resource`].sort())
+    Expect(ReaddirSync(Join(Directory, `${Name}Resource`))).toEqual([])
+    const Opened = await Call('/api/open', { path: Path }, { session: RandomUUID() })
+    Expect(Opened.body.document).toEqual(EmptyDocument())
+    Expect(Opened.body.assets).toEqual([])
+    const Changed = { ...EmptyDocument(), viewport: { x: 91, y: -8, zoom: 2 } }
+    Expect((await Call('/api/save', { path: Path, document: Changed })).status).toBe(200)
+    Expect(ReadFileSync(Path, 'utf8')).toContain('x: 91')
+  })
+
+  It('saves the initial unnamed board into a named project without losing its cached images', async () => {
+    const { call: Call, projectDirectory: ProjectDirectory } = await App()
+    const Imported = await Call('/api/import', { files: [{ name: '参考.jpg', data: await Jpeg() }] })
+    const Document = ImageBoard(Imported.body.assets[0].id)
+    const Path = Join(ProjectDirectory, 'First', 'First.hbr')
+    const Created = await Call('/api/new', { name: 'First', document: Document })
+    Expect(Created.status).toBe(200)
+    Expect(Created.body).toEqual({ path: Path })
+    Expect(ReaddirSync(Join(ProjectDirectory, 'First', 'FirstResource'))).toEqual([`${Imported.body.assets[0].id}.png`])
+    Expect(ReadFileSync(Path, 'utf8')).toContain(`FirstResource/${Imported.body.assets[0].id}.png`)
+    const Loaded = await Call('/api/open', { path: Path }, { session: RandomUUID() })
+    Expect(Loaded.body.document).toEqual(Document)
+    Expect(Loaded.body.assets).toEqual(Imported.body.assets)
+    Document.images[0].x = 77
+    Expect((await Call('/api/save', { path: Path, document: Document })).status).toBe(200)
+  })
+
+  It('rejects path traversal, reserved Windows names and invalid project names without creating files', async () => {
+    const { call: Call, projectDirectory: ProjectDirectory } = await App()
+    const InvalidNames = [undefined, null, 123, '', ' ', '.', '..', '../Escape', '..\\Escape', 'D:\\Escape', '/Escape',
+      'With/Slash', 'With\\Slash', 'Bad:Name', 'Bad*Name', 'Bad?Name', 'Bad"Name', 'Bad<Name', 'Bad>Name', 'Bad|Name',
+      'Bad\0Name', 'Bad\nName', 'Trailing.', 'Trailing ', ' Leading', 'CON', 'con.txt', 'PRN', 'AUX', 'NUL',
+      'COM1', 'Lpt9.png', 'COM¹', 'LPT²', 'CON .txt', 'CONIN$', 'CONOUT$', 'A'.repeat(248)]
+    for (const Name of InvalidNames) {
+      const Result = await Call('/api/new', { name: Name })
+      Expect(Result.status, `Invalid name: ${String(Name)}`).toBe(400)
+    }
+    Expect(ReaddirSync(ProjectDirectory)).toEqual([])
+  })
+
+  It('rejects existing project directories and files, preserving the current board and cached images on every failure', async () => {
+    const { call: Call, projectDirectory: ProjectDirectory } = await App()
+    const Imported = await Call('/api/import', { files: [{ name: 'keep.jpg', data: await Jpeg() }] })
+    const Document = ImageBoard(Imported.body.assets[0].id)
+    const Current = Join(ProjectDirectory, 'Current', 'Current.hbr')
+    Expect((await Call('/api/new', { name: 'Current', document: Document })).status).toBe(200)
+    const Before = ReadFileSync(Current, 'utf8')
+    MkdirSync(Join(ProjectDirectory, 'ExistingDirectory'))
+    WriteFileSync(Join(ProjectDirectory, 'ExistingFile'), 'preserve this file')
+    for (const Name of ['Current', 'ExistingDirectory', 'ExistingFile']) {
+      const Result = await Call('/api/new', { name: Name })
+      Expect(Result.status).toBe(409)
+      Expect(Result.body.code).toBe('EXISTS')
+    }
+    Expect(ReadFileSync(Current, 'utf8')).toBe(Before)
+    Expect(ReadFileSync(Join(ProjectDirectory, 'ExistingFile'), 'utf8')).toBe('preserve this file')
+    Expect(ReaddirSync(Join(ProjectDirectory, 'ExistingDirectory'))).toEqual([])
+    const Invalid = await Call('/api/new', { name: 'Invalid', document: null })
+    Expect(Invalid.status).toBe(400)
+    Expect(ExistsSync(Join(ProjectDirectory, 'Invalid'))).toBe(false)
+    Vi.spyOn(ImageStore.prototype, 'SaveProject').mockRejectedValueOnce(new Error('simulated write failure'))
+    Expect((await Call('/api/new', { name: 'Failed' })).status).toBe(400)
+    Expect(ExistsSync(Join(ProjectDirectory, 'Failed'))).toBe(false)
+    Document.images[0].x = 42
+    Expect((await Call('/api/save', { path: Current, document: Document })).status).toBe(200)
+    Expect(ReadFileSync(Current, 'utf8')).toContain('x: 42')
+  })
+
+  It('leaves any files written before a project-creation failure intact', async () => {
+    const { call: Call, projectDirectory: ProjectDirectory } = await App()
+    const Directory = Join(ProjectDirectory, 'Interrupted')
+    Vi.spyOn(ImageStore.prototype, 'SaveProject').mockImplementationOnce(async () => {
+      WriteFileSync(Join(Directory, 'Keep.txt'), 'partially written or externally added data')
+      throw new Error('simulated interrupted save')
+    })
+    Expect((await Call('/api/new', { name: 'Interrupted' })).status).toBe(400)
+    Expect(ReadFileSync(Join(Directory, 'Keep.txt'), 'utf8')).toBe('partially written or externally added data')
+    Expect((await Call('/api/new', { name: 'Interrupted' })).status).toBe(409)
+  })
+
+  It('allows only one simultaneous creation of the same project across sessions', async () => {
+    const { call: Call, projectDirectory: ProjectDirectory } = await App(false)
+    const Results = await Promise.all([
+      Call('/api/new', { name: 'Race', document: { ...EmptyDocument(), viewport: { x: 11, y: 0, zoom: 1 } } }, { session: RandomUUID() }),
+      Call('/api/new', { name: 'Race', document: { ...EmptyDocument(), viewport: { x: 22, y: 0, zoom: 1 } } }, { session: RandomUUID() }),
+    ])
+    Expect(Results.map((Result) => Result.status).sort()).toEqual([200, 409])
+    Expect(Results.find((Result) => Result.status === 409)?.body.code).toBe('EXISTS')
+    const Winner = Results[0].status === 200 ? 11 : 22
+    Expect(ReadFileSync(Join(ProjectDirectory, 'Race', 'Race.hbr'), 'utf8')).toContain(`x: ${Winner}`)
+    Expect(ReaddirSync(Join(ProjectDirectory, 'Race')).sort()).toEqual(['Race.hbr', 'RaceResource'])
   })
 
   It('rejects cross-origin, rebinding Host, wrong ports, browser preflights and cross-site fetches', async () => {
@@ -213,6 +315,16 @@ Describe('local browser HTTP server', () => {
     const Nested = await Call('/api/browse', { path: Join(ProjectDirectory, '目录 #%') })
     Expect(Nested.body.parent).toBe(ProjectDirectory)
     Expect(Nested.body.entries).toEqual([])
+  })
+
+  It('creates a missing Project directory when browsing the default location', async () => {
+    const { call: Call, projectDirectory: ProjectDirectory } = await App(false)
+    Expect(ExistsSync(ProjectDirectory)).toBe(false)
+    const Result = await Call('/api/browse', {})
+    Expect(Result.status).toBe(200)
+    Expect(Result.body.path).toBe(ProjectDirectory)
+    Expect(Result.body.entries).toEqual([])
+    Expect(ReaddirSync(ProjectDirectory)).toEqual([])
   })
 
   It('blocks encoded, backslash and symbolic-link static path escapes', async () => {

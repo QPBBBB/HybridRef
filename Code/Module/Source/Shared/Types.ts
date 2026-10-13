@@ -9,7 +9,7 @@ export interface BrowseEntry { name: string; path: string; kind: 'directory' | '
 export interface BrowseResult { path: string; parent: string | null; entries: BrowseEntry[]; roots: string[] }
 export interface HybridRefApi {
   Startup(): Promise<LoadedBoard | null>
-  NewProject(): Promise<void>
+  NewProject(): Promise<LoadedBoard | null>
   Open(): Promise<LoadedBoard | null>
   Save(Document: BoardDocument, Path: string | null): Promise<SaveResult | null>
   ImportBytes(Files: { name: string; bytes: Uint8Array }[]): Promise<ImportResult>
