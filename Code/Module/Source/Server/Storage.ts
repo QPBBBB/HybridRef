@@ -1,13 +1,16 @@
 import { createHash as CreateHash, randomUUID as RandomUUID } from 'node:crypto'
-import { mkdir as Mkdir, open as Open, readFile as ReadFile, realpath as Realpath, rename as Rename, stat as Stat, unlink as Unlink } from 'node:fs/promises'
+import { constants as FsConstants } from 'node:fs'
+import { copyFile as CopyFile, link as Link, mkdir as Mkdir, open as Open, readFile as ReadFile, realpath as Realpath, rename as Rename, stat as Stat, unlink as Unlink } from 'node:fs/promises'
 import { basename as Basename, dirname as Dirname, extname as Extname, isAbsolute as IsAbsolute, join as Join, relative as Relative, resolve as Resolve, win32 as Win32 } from 'node:path'
 import { decode as DecodeBmp } from 'bmp-js'
 import Sharp from 'sharp'
 import { parseDocument as ParseDocument, stringify as Stringify } from 'yaml'
 import type { BoardDocument, BoardImage, ImageAsset, ImportResult, LoadedBoard } from '../Shared/Types'
 
-type CachedImage = { bytes: Buffer; asset: ImageAsset }
+type DecodedImage = { bytes: Buffer; asset: ImageAsset }
+type CachedImage = DecodedImage & { Filename: string }
 const Hash = /^[a-f0-9]{64}$/
+const ShortFilename = /^([0-9]{13})_([A-F0-9]{8})\.png$/
 
 function IsRecord(Value: unknown): Value is Record<string, unknown> {
   return Value !== null && typeof Value === 'object' && !Array.isArray(Value)
@@ -75,7 +78,7 @@ function ValidateRelativeAsset(Source: string): string {
     throw new Error(`图片资源路径不安全，必须位于画板目录内：${Source}`)
   }
   const Filename = Parts[Parts.length - 1]
-  if (!/^[a-f0-9]{64}\.png$/.test(Filename)) throw new Error(`图片资源名称无效，应为内容哈希加 .png：${Source}`)
+  if (!ShortFilename.test(Filename)) throw new Error(`图片资源名称无效，应为 13 位时间戳_8 位大写哈希.png：${Source}`)
   return Normalized
 }
 
@@ -90,23 +93,33 @@ async function GuardedResource(ProjectDir: string, Path: string): Promise<string
   return FileValue
 }
 
-async function AtomicWrite(Path: string, Bytes: Buffer | string): Promise<void> {
+async function AtomicWrite(Path: string, Bytes: Buffer | string, Exclusive = false): Promise<void> {
   const Temporary = Join(Dirname(Path), `.${Basename(Path)}.${RandomUUID()}.tmp`)
   try {
     const FileValue = await Open(Temporary, 'wx')
     try { await FileValue.writeFile(Bytes); await FileValue.sync() } finally { await FileValue.close() }
-    await Rename(Temporary, Path)
+    // Installing immutable assets with a hard link is atomic and cannot replace
+    // another writer's file between the existence check and this operation.
+    if (Exclusive) {
+      try { await Link(Temporary, Path) }
+      catch (CaughtError) {
+        if (!['ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'ENOSYS', 'EXDEV'].includes((CaughtError as NodeJS.ErrnoException)?.code ?? '')) throw CaughtError
+        // FAT/exFAT and some network volumes cannot link files. Copy the fully
+        // written temporary file exclusively before publishing the YAML.
+        await CopyFile(Temporary, Path, FsConstants.COPYFILE_EXCL)
+      }
+    } else await Rename(Temporary, Path)
   } finally {
     await Unlink(Temporary).catch((CaughtError: unknown) => { if (!Missing(CaughtError)) throw CaughtError })
   }
 }
 
-function Cached(Bytes: Buffer, Width: number, Height: number): CachedImage {
+function Cached(Bytes: Buffer, Width: number, Height: number): DecodedImage {
   const Id = Digest(Bytes)
   return { bytes: Bytes, asset: { id: Id, dataUrl: `data:image/png;base64,${Bytes.toString('base64')}`, width: Width, height: Height } }
 }
 
-async function NormalizeImage(Input: Uint8Array): Promise<CachedImage> {
+async function NormalizeImage(Input: Uint8Array): Promise<DecodedImage> {
   const Bytes = Buffer.from(Input)
   let ImageValue: Sharp.Sharp
   if (Bytes.length >= 2 && Bytes.toString('ascii', 0, 2) === 'BM') {
@@ -131,12 +144,31 @@ async function NormalizeImage(Input: Uint8Array): Promise<CachedImage> {
 /** Owns compressed PNG bytes for the whole project, independent of source files. */
 export class ImageStore {
   private Images = new Map<string, CachedImage>()
+  private FilenameIds = new Map<string, string>()
   private Revision = 0
   private SaveQueue: Promise<void> = Promise.resolve()
 
   Clear(): void {
     this.Revision += 1
     this.Images.clear()
+    this.FilenameIds.clear()
+  }
+
+  private CacheImported(ImageValue: DecodedImage): CachedImage {
+    const Id = ImageValue.asset.id
+    const Existing = this.Images.get(Id)
+    if (Existing) return Existing
+    let Timestamp = Date.now()
+    let Filename: string
+    do {
+      Filename = `${Timestamp}_${Id.slice(0, 8).toUpperCase()}.png`
+      if (!ShortFilename.test(Filename)) throw new Error('系统时间无效，无法生成图片资源名称。')
+      Timestamp += 1
+    } while (this.FilenameIds.has(Filename))
+    const Image = { ...ImageValue, Filename }
+    this.Images.set(Id, Image)
+    this.FilenameIds.set(Filename, Id)
+    return Image
   }
 
   async ImportFiles(Paths: string[]): Promise<ImportResult> {
@@ -146,8 +178,7 @@ export class ImageStore {
       try {
         const ImageValue = await NormalizeImage(await ReadFile(Path))
         if (Revision !== this.Revision) throw new Error('画板已切换，已取消导入。')
-        this.Images.set(ImageValue.asset.id, ImageValue)
-        Result.assets.push({ ...ImageValue.asset })
+        Result.assets.push({ ...this.CacheImported(ImageValue).asset })
       } catch (CaughtError) { Result.errors.push(`${Basename(Path)}：${ReadableError(CaughtError)}`) }
     }
     return Result
@@ -160,8 +191,7 @@ export class ImageStore {
       try {
         const ImageValue = await NormalizeImage(FileValue.bytes)
         if (Revision !== this.Revision) throw new Error('画板已切换，已取消导入。')
-        this.Images.set(ImageValue.asset.id, ImageValue)
-        Result.assets.push({ ...ImageValue.asset })
+        Result.assets.push({ ...this.CacheImported(ImageValue).asset })
       } catch (CaughtError) { Result.errors.push(`${FileValue.name}：${ReadableError(CaughtError)}`) }
     }
     return Result
@@ -173,29 +203,37 @@ export class ImageStore {
     const Document = ParseProject(await ReadFile(Target, 'utf8'))
     const ProjectDir = Dirname(Target)
     const Next = new Map<string, CachedImage>()
-    const LoadedPaths = new Set<string>()
+    const NextFilenames = new Map<string, string>()
+    const LoadedPaths = new Map<string, string>()
     for (const ImageValue of Document.images) {
       const Reference = ValidateRelativeAsset(ImageValue.asset)
-      const Id = Basename(Reference, '.png')
-      if (!LoadedPaths.has(Reference)) {
+      const Filename = Basename(Reference)
+      let Id = LoadedPaths.get(Reference)
+      if (!Id) {
         let Bytes: Buffer
         try { Bytes = await ReadFile(await GuardedResource(ProjectDir, Resolve(ProjectDir, Reference))) }
         catch (CaughtError) { throw new Error(`无法读取图片资源 ${Reference}：${ReadableError(CaughtError)}`) }
-        if (Digest(Bytes) !== Id) throw new Error(`图片资源内容哈希不匹配，文件可能已损坏或被修改：${Reference}`)
+        Id = Digest(Bytes)
+        const Matches = ShortFilename.exec(Filename)![2] === Id.slice(0, 8).toUpperCase()
+        if (!Matches) throw new Error(`图片资源内容哈希不匹配，文件可能已损坏或被修改：${Reference}`)
+        const ExistingId = NextFilenames.get(Filename)
+        if (ExistingId && ExistingId !== Id) throw new Error(`图片资源名称重复但内容不同：${Filename}`)
         try {
           const Metadata = await Sharp(Bytes).metadata()
           if (Metadata.format !== 'png') throw new Error('资源必须是 PNG 图片。')
           // Decode as well as inspecting the header, so a truncated IDAT cannot
           // replace a healthy in-memory project and fail only when displayed.
           const { info: Info } = await Sharp(Bytes).raw().toBuffer({ resolveWithObject: true })
-          Next.set(Id, Cached(Bytes, Info.width, Info.height))
+          if (!Next.has(Id)) Next.set(Id, { ...Cached(Bytes, Info.width, Info.height), Filename })
         } catch (CaughtError) { throw new Error(`图片资源已损坏 ${Reference}：${ReadableError(CaughtError)}`) }
-        LoadedPaths.add(Reference)
+        NextFilenames.set(Filename, Id)
+        LoadedPaths.set(Reference, Id)
       }
       ImageValue.asset = Id
     }
     if (Revision !== this.Revision) throw new Error('画板加载已取消。')
     this.Images = Next
+    this.FilenameIds = NextFilenames
     return { path: Target, document: Document, assets: [...Next.values()].map((ImageValue) => ({ ...ImageValue.asset })) }
   }
 
@@ -224,22 +262,29 @@ export class ImageStore {
       await Mkdir(ResourceDir, { recursive: true })
       await GuardedResource(ProjectDir, ResourceDir)
       // Validate all existing targets before writing any resource or the YAML.
-      const Absent: { path: string; bytes: Buffer }[] = []
+      const Absent: { path: string; bytes: Buffer; Id: string }[] = []
       for (const [Id, ImageValue] of Assets) {
-        const Destination = Join(ResourceDir, `${Id}.png`)
+        const Destination = Join(ResourceDir, ImageValue.Filename)
         try {
           await Stat(Destination)
           const Bytes = await ReadFile(await GuardedResource(ProjectDir, Destination))
           if (Digest(Bytes) !== Id) throw new Error(`目标图片资源已损坏，未覆盖：${Destination}`)
         } catch (CaughtError) {
           if (!Missing(CaughtError)) throw CaughtError
-          Absent.push({ path: Destination, bytes: ImageValue.bytes })
+          Absent.push({ path: Destination, bytes: ImageValue.bytes, Id })
         }
       }
-      for (const ImageValue of Absent) await AtomicWrite(ImageValue.path, ImageValue.bytes)
+      for (const ImageValue of Absent) {
+        try { await AtomicWrite(ImageValue.path, ImageValue.bytes, true) }
+        catch (CaughtError) {
+          if ((CaughtError as NodeJS.ErrnoException)?.code !== 'EEXIST') throw CaughtError
+          const Bytes = await ReadFile(await GuardedResource(ProjectDir, ImageValue.path))
+          if (Digest(Bytes) !== ImageValue.Id) throw new Error(`目标图片资源已损坏，未覆盖：${ImageValue.path}`)
+        }
+      }
       const Portable: BoardDocument = {
         ...Document,
-        images: Document.images.map((ImageValue) => ({ ...ImageValue, asset: `${ResourceName}/${ImageValue.asset}.png` })),
+        images: Document.images.map((ImageValue) => ({ ...ImageValue, asset: `${ResourceName}/${Assets.get(ImageValue.asset)!.Filename}` })),
       }
       await AtomicWrite(Target, Stringify(Portable, { indent: 2, lineWidth: 0, aliasDuplicateObjects: false, defaultKeyType: 'PLAIN', defaultStringType: 'QUOTE_DOUBLE' }))
     })

@@ -11,6 +11,16 @@ button:disabled { color: #595d64; cursor: default; }
 .divider { height: 19px; width: 1px; background: #36383e; margin: 0 6px; }
 .filename { color: #838792; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-left: auto; max-width: 32vw; }
 .working { font-size: 12px; color: #b6cbe6; }
+.project-control { position: relative; }
+.project-menu { position: absolute; left: 0; top: calc(100% + 8px); width: 270px; max-width: calc(100vw - 28px); padding: 5px; border: 1px solid #383b43; border-radius: 7px; background: #1b1d22; box-shadow: 0 10px 32px #0009; }
+.project-menu button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; text-align: left; }
+.project-menu button > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.project-menu button.current { color: #c1d9f8; background: #263446; }
+.project-menu .project-create { color: #c5d8ee; }
+.project-menu-list { margin-top: 5px; padding-top: 5px; border-top: 1px solid #33363d; max-height: min(350px, 60vh); overflow-y: auto; }
+.project-menu-list p { margin: 0; padding: 12px 10px; color: #929aa8; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.project-menu-list .project-menu-error { color: #d1ad90; }
+.project-current { margin-left: auto; font-size: 8px; }
 .align-control { position: relative; }
 .align-menu { position: absolute; left: 0; top: 36px; width: 130px; background: #22242a; border: 1px solid #393c44; border-radius: 6px; box-shadow: 0 8px 24px #0008; padding: 4px; display: grid; }
 .align-menu button { text-align: left; }

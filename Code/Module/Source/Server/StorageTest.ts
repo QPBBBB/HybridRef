@@ -1,11 +1,11 @@
 import { createHash as CreateHash } from 'node:crypto'
 import { cpSync as CpSync, existsSync as ExistsSync, mkdirSync as MkdirSync, mkdtempSync as MkdtempSync, readFileSync as ReadFileSync, readdirSync as ReaddirSync, rmSync as RmSync, symlinkSync as SymlinkSync, writeFileSync as WriteFileSync } from 'node:fs'
 import { tmpdir as Tmpdir } from 'node:os'
-import { join as Join, resolve as Resolve } from 'node:path'
+import { basename as Basename, join as Join, resolve as Resolve } from 'node:path'
 import { encode as EncodeBmp } from 'bmp-js'
 import Sharp from 'sharp'
 import { parse as Parse, stringify as Stringify } from 'yaml'
-import { afterEach as AfterEach, describe as Describe, expect as Expect, it as It } from 'vitest'
+import { afterEach as AfterEach, describe as Describe, expect as Expect, it as It, vi as Vi } from 'vitest'
 import { ImageStore } from './Storage'
 import type { BoardDocument } from '../Shared/Types'
 
@@ -16,6 +16,7 @@ function Temp(): string {
   return Path
 }
 AfterEach(() => {
+  Vi.restoreAllMocks()
   for (const Path of Roots.splice(0)) {
     if (!Resolve(Path).startsWith(Join(Tmpdir(), 'hybridref-store-'))) throw new Error('Unsafe test cleanup path')
     RmSync(Path, { recursive: true, force: true })
@@ -32,6 +33,11 @@ async function Jpeg(): Promise<Buffer> {
 }
 function Bytes(DataUrl: string): Buffer { return Buffer.from(DataUrl.split(',')[1], 'base64') }
 function Hash(Value: Buffer): string { return CreateHash('sha256').update(Value).digest('hex') }
+// Two valid compressed PNGs with different SHA256 digests beginning D9D0F99F.
+const CollisionPngs = [
+  'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAD0lEQVR42mPYXM3AwMAAAAagAS/XvTdHAAAAAElFTkSuQmCC',
+  'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAD0lEQVR42mOIymFiYGAAAARHAMkYYlopAAAAAElFTkSuQmCC',
+].map((Text) => Buffer.from(Text, 'base64'))
 
 Describe('image-only HybridRef storage', () => {
   It('creates the resource directory for an empty project and keeps repeated saves deterministic', async () => {
@@ -88,6 +94,108 @@ Describe('image-only HybridRef storage', () => {
     Expect(Files.assets[0].id).toBe(Buffers.assets[0].id)
   })
 
+  It('assigns a timestamp filename once on import and preserves it on duplicate import and after reopening', async () => {
+    const Root = Temp()
+    const Path = Join(Root, 'StableName.hbr')
+    let Now = 1700000000000
+    Vi.spyOn(Date, 'now').mockImplementation(() => Now)
+    const Store = new ImageStore()
+    const Photo = await Jpeg()
+    const Imported = await Store.ImportBuffers([{ name: 'first.jpg', bytes: Photo }])
+    const Id = Imported.assets[0].id
+    const Filename = `1700000000000_${Id.slice(0, 8).toUpperCase()}.png`
+    Now += 5000
+    const Duplicate = await Store.ImportBuffers([{ name: 'again.jpg', bytes: Photo }])
+    Expect(Duplicate.assets[0].id).toBe(Id)
+    const Doc = Board(Id)
+    Doc.images.push({ ...Doc.images[0], id: 'image-2', x: 200 })
+    await Store.SaveProject(Path, Doc)
+    const Original = ReadFileSync(Path, 'utf8')
+    Expect(Parse(Original).images.map((ImageValue: { asset: string }) => ImageValue.asset)).toEqual([
+      `StableNameResource/${Filename}`, `StableNameResource/${Filename}`,
+    ])
+    Expect(ReaddirSync(Join(Root, 'StableNameResource'))).toEqual([Filename])
+    const Reopened = new ImageStore()
+    const Loaded = await Reopened.LoadProject(Path)
+    Now += 5000
+    Expect((await Reopened.ImportBuffers([{ name: 'third.jpg', bytes: Photo }])).assets[0].id).toBe(Id)
+    await Reopened.SaveProject(Path, Loaded.document)
+    Expect(ReadFileSync(Path, 'utf8')).toBe(Original)
+    Expect(ReaddirSync(Join(Root, 'StableNameResource'))).toEqual([Filename])
+  })
+
+  It('resolves real short-hash collisions in the same millisecond without merging or overwriting images', async () => {
+    const Root = Temp()
+    const Path = Join(Root, 'Collision.hbr')
+    Vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const Store = new ImageStore()
+    const Imported = await Store.ImportBuffers(CollisionPngs.map((Data, Index) => ({ name: `Collision${Index}.png`, bytes: Data })))
+    Expect(Imported.errors).toEqual([])
+    Expect(Imported.assets).toHaveLength(2)
+    Expect(Imported.assets[0].id).not.toBe(Imported.assets[1].id)
+    Expect(Imported.assets.map((Asset) => Asset.id.slice(0, 8))).toEqual(['d9d0f99f', 'd9d0f99f'])
+    const Doc = Board(Imported.assets[0].id)
+    Doc.images.push({ ...Doc.images[0], id: 'image-2', asset: Imported.assets[1].id })
+    await Store.SaveProject(Path, Doc)
+    const Names = ['1700000000000_D9D0F99F.png', '1700000000001_D9D0F99F.png']
+    Expect(ReaddirSync(Join(Root, 'CollisionResource')).sort()).toEqual(Names)
+    for (const [Index, Name] of Names.entries()) Expect(ReadFileSync(Join(Root, 'CollisionResource', Name))).toEqual(CollisionPngs[Index])
+    const Reopened = new ImageStore()
+    const Loaded = await Reopened.LoadProject(Path)
+    Expect(Loaded.document).toEqual(Doc)
+    Expect(Loaded.assets).toEqual(Imported.assets)
+    const Before = ReadFileSync(Path, 'utf8')
+    await Reopened.SaveProject(Path, Loaded.document)
+    Expect(ReadFileSync(Path, 'utf8')).toBe(Before)
+  })
+
+  It('uses the full hash before saving over an existing filename even when the short hashes match', async () => {
+    const Root = Temp()
+    const Path = Join(Root, 'ProtectedCollision.hbr')
+    Vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const Store = new ImageStore()
+    const Imported = await Store.ImportBuffers([{ name: 'First.png', bytes: CollisionPngs[0] }])
+    const Doc = Board(Imported.assets[0].id)
+    await Store.SaveProject(Path, Doc)
+    const Before = ReadFileSync(Path, 'utf8')
+    const Resource = Join(Root, Parse(Before).images[0].asset)
+    WriteFileSync(Resource, CollisionPngs[1])
+    await Expect(Store.SaveProject(Path, Doc)).rejects.toThrow('目标图片资源已损坏')
+    Expect(ReadFileSync(Path, 'utf8')).toBe(Before)
+    Expect(ReadFileSync(Resource)).toEqual(CollisionPngs[1])
+  })
+
+  It('rejects legacy full-hash filenames without modifying the project or resource', async () => {
+    const Root = Temp()
+    const Path = Join(Root, 'Legacy.hbr')
+    const Id = Hash(CollisionPngs[0])
+    const Directory = Join(Root, 'LegacyResource')
+    MkdirSync(Directory)
+    const Resource = Join(Directory, `${Id}.png`)
+    WriteFileSync(Resource, CollisionPngs[0])
+    const Stored = Board(Id)
+    Stored.images[0].asset = `LegacyResource/${Id}.png`
+    const Before = Stringify(Stored, { indent: 2, lineWidth: 0, aliasDuplicateObjects: false, defaultKeyType: 'PLAIN', defaultStringType: 'QUOTE_DOUBLE' })
+    WriteFileSync(Path, Before)
+    const Store = new ImageStore()
+    await Expect(Store.LoadProject(Path)).rejects.toThrow('资源名称无效')
+    await Expect(Store.SaveProject(Path, Board())).rejects.toThrow('资源名称无效')
+    Expect(ReadFileSync(Path, 'utf8')).toBe(Before)
+    Expect(ReadFileSync(Resource)).toEqual(CollisionPngs[0])
+    Expect(ReaddirSync(Directory)).toEqual([`${Id}.png`])
+  })
+
+  It('rejects a short-hash filename that does not match its PNG bytes', async () => {
+    const Root = Temp()
+    const Filename = '1700000000000_00000000.png'
+    WriteFileSync(Join(Root, Filename), CollisionPngs[0])
+    const Stored = Board(Hash(CollisionPngs[0]))
+    Stored.images[0].asset = Filename
+    const Path = Join(Root, 'WrongHash.hbr')
+    WriteFileSync(Path, Stringify(Stored))
+    await Expect(new ImageStore().LoadProject(Path)).rejects.toThrow('内容哈希不匹配')
+  })
+
   It('saves literal Chinese/#/% paths, caches bytes after source deletion, and deduplicates image instances', async () => {
     const Root = Temp()
     const Source = Join(Root, '原图 #%25.jpg')
@@ -103,8 +211,11 @@ Describe('image-only HybridRef storage', () => {
     const Raw = ReadFileSync(Path, 'utf8')
     Expect(Raw).toContain('formatVersion: 2')
     Expect(Raw).not.toMatch(/createdAt|updatedAt|boards:|recordings:|data:image/)
-    Expect(Parse(Raw).images.map((ImageValue: { asset: string }) => ImageValue.asset)).toEqual([`参考 #% 测试Resource/${Asset}.png`, `参考 #% 测试Resource/${Asset}.png`])
-    Expect(ReaddirSync(Join(Root, '参考 #% 测试Resource'))).toEqual([`${Asset}.png`])
+    const Filename = Basename(Parse(Raw).images[0].asset)
+    Expect(Filename).toMatch(/^[0-9]{13}_[A-F0-9]{8}\.png$/)
+    Expect(Filename.endsWith(`_${Asset.slice(0, 8).toUpperCase()}.png`)).toBe(true)
+    Expect(Parse(Raw).images.map((ImageValue: { asset: string }) => ImageValue.asset)).toEqual([`参考 #% 测试Resource/${Filename}`, `参考 #% 测试Resource/${Filename}`])
+    Expect(ReaddirSync(Join(Root, '参考 #% 测试Resource'))).toEqual([Filename])
     const Loaded = await new ImageStore().LoadProject(Path)
     Expect(Loaded.document).toEqual(Doc)
     Expect(Loaded.assets).toEqual(Imported.assets)
@@ -141,6 +252,7 @@ Describe('image-only HybridRef storage', () => {
     const Imported = await Store.ImportBuffers([{ name: 'image.jpg', bytes: await Jpeg() }])
     const Original = Join(Root, 'Original.hbr')
     await Store.SaveProject(Original, Board(Imported.assets[0].id))
+    const Filename = Basename(Parse(ReadFileSync(Original, 'utf8')).images[0].asset)
     const Moved = Temp()
     CpSync(Original, Join(Moved, 'Original.hbr'))
     CpSync(Join(Root, 'OriginalResource'), Join(Moved, 'OriginalResource'), { recursive: true })
@@ -148,7 +260,7 @@ Describe('image-only HybridRef storage', () => {
     const Loaded = await LoadedStore.LoadProject(Join(Moved, 'Original.hbr'))
     const SavedAs = Join(Temp(), '另存.hbr')
     await LoadedStore.SaveProject(SavedAs, Loaded.document)
-    Expect(Parse(ReadFileSync(SavedAs, 'utf8')).images[0].asset).toBe(`另存Resource/${Imported.assets[0].id}.png`)
+    Expect(Parse(ReadFileSync(SavedAs, 'utf8')).images[0].asset).toBe(`另存Resource/${Filename}`)
     Expect((await new ImageStore().LoadProject(SavedAs)).assets).toEqual(Imported.assets)
   })
 
@@ -161,7 +273,7 @@ Describe('image-only HybridRef storage', () => {
     const Before = ReadFileSync(Path, 'utf8')
     await Expect(Store.SaveProject(Path, Board('f'.repeat(64)))).rejects.toThrow('不在内存')
     Expect(ReadFileSync(Path, 'utf8')).toBe(Before)
-    const Resource = Join(Root, 'ProtectedResource', `${Imported.assets[0].id}.png`)
+    const Resource = Join(Root, Parse(Before).images[0].asset)
     WriteFileSync(Resource, 'external corruption')
     await Expect(Store.SaveProject(Path, Board(Imported.assets[0].id))).rejects.toThrow('目标图片资源已损坏')
     Expect(ReadFileSync(Path, 'utf8')).toBe(Before)
@@ -175,7 +287,7 @@ Describe('image-only HybridRef storage', () => {
     const Imported = await Store.ImportBuffers([{ name: 'keep.jpg', bytes: await Jpeg() }])
     const ProjectPath = Join(Root, 'Missing.hbr')
     const Stored = Board(Imported.assets[0].id)
-    Stored.images[0].asset = `MissingResource/${Imported.assets[0].id}.png`
+    Stored.images[0].asset = `MissingResource/1700000000000_${Imported.assets[0].id.slice(0, 8).toUpperCase()}.png`
     WriteFileSync(ProjectPath, Stringify(Stored))
     await Expect(Store.LoadProject(ProjectPath)).rejects.toThrow('无法读取图片资源')
     await Store.SaveProject(Join(Root, 'StillCached.hbr'), Board(Imported.assets[0].id))
@@ -193,8 +305,9 @@ Describe('image-only HybridRef storage', () => {
     const Corrupt = Buffer.from('this is not a PNG')
     const Id = Hash(Corrupt)
     const Doc = Board(Id)
-    Doc.images[0].asset = `${Id}.png`
-    WriteFileSync(Join(Root, `${Id}.png`), Corrupt)
+    const Filename = `1700000000000_${Id.slice(0, 8).toUpperCase()}.png`
+    Doc.images[0].asset = Filename
+    WriteFileSync(Join(Root, Filename), Corrupt)
     WriteFileSync(Join(Root, 'Bad.hbr'), Stringify(Doc))
     await Expect(new ImageStore().LoadProject(Join(Root, 'Bad.hbr'))).rejects.toThrow('图片资源已损坏')
   })
@@ -202,7 +315,7 @@ Describe('image-only HybridRef storage', () => {
   It.each(['../outside/', 'C:/outside/', '/outside/', 'local:///outside/', './Resource/'])('rejects unsafe path prefix %s', async (Prefix) => {
     const Root = Temp()
     const Doc = Board('a'.repeat(64))
-    Doc.images[0].asset = `${Prefix}${'a'.repeat(64)}.png`
+    Doc.images[0].asset = `${Prefix}1700000000000_AAAAAAAA.png`
     WriteFileSync(Join(Root, 'Unsafe.hbr'), Stringify(Doc))
     await Expect(new ImageStore().LoadProject(Join(Root, 'Unsafe.hbr'))).rejects.toThrow('路径不安全')
   })
@@ -213,10 +326,11 @@ Describe('image-only HybridRef storage', () => {
     const Store = new ImageStore()
     const Imported = await Store.ImportBuffers([{ name: 'image.jpg', bytes: await Jpeg() }])
     const Id = Imported.assets[0].id
-    WriteFileSync(Join(Outside, `${Id}.png`), Bytes(Imported.assets[0].dataUrl))
+    const Filename = `1700000000000_${Id.slice(0, 8).toUpperCase()}.png`
+    WriteFileSync(Join(Outside, Filename), Bytes(Imported.assets[0].dataUrl))
     SymlinkSync(Outside, Join(Root, 'EscapeResource'), process.platform === 'win32' ? 'junction' : 'dir')
     const Doc = Board(Id)
-    Doc.images[0].asset = `EscapeResource/${Id}.png`
+    Doc.images[0].asset = `EscapeResource/${Filename}`
     const Path = Join(Root, 'Escape.hbr')
     WriteFileSync(Path, Stringify(Doc))
     const Original = ReadFileSync(Path, 'utf8')

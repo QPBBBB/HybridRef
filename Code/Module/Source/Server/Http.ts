@@ -1,6 +1,6 @@
 import { createServer as CreateServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { mkdir as Mkdir, readFile as ReadFile, readdir as Readdir, realpath as Realpath, rmdir as Rmdir, stat as Stat } from 'node:fs/promises'
-import { dirname as Dirname, extname as Extname, isAbsolute as IsAbsolute, join as Join, relative as Relative, resolve as Resolve } from 'node:path'
+import { basename as Basename, dirname as Dirname, extname as Extname, isAbsolute as IsAbsolute, join as Join, relative as Relative, resolve as Resolve } from 'node:path'
 import { EmptyDocument, type BoardDocument } from '../Shared/Types'
 import { ImageStore } from './Storage'
 
@@ -9,7 +9,7 @@ type Session = { store: ImageStore; currentPath: string | null; queue: Promise<v
 type Body = Record<string, unknown>
 const BodyLimit = 256 * 1024 * 1024
 const SessionId = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i
-const ApiPaths = new Set(['/api/startup', '/api/open', '/api/save', '/api/import', '/api/browse', '/api/ping', '/api/new'])
+const ApiPaths = new Set(['/api/startup', '/api/open', '/api/save', '/api/import', '/api/browse', '/api/ping', '/api/new', '/api/projects'])
 const Mime: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml',
@@ -131,6 +131,34 @@ async function Browse(Path: string, ProjectDirectory: string): Promise<unknown> 
   return { path: Path, parent: Dirname(Path) === Path ? null : Dirname(Path), entries: Entries, roots: await Roots(ProjectDirectory) }
 }
 
+async function Projects(ProjectDirectory: string): Promise<{ name: string; path: string }[]> {
+  await Mkdir(ProjectDirectory, { recursive: true })
+  const Root = await Realpath(ProjectDirectory)
+  const Entries = await Readdir(ProjectDirectory, { withFileTypes: true })
+  const ResourceNames = new Set(Entries.filter(Entry => Entry.isFile() && Extname(Entry.name).toLowerCase() === '.hbr')
+    .map(Entry => Key(`${Basename(Entry.name, Extname(Entry.name))}Resource`)))
+  async function Contained(Path: string): Promise<boolean> {
+    try { return Inside(Root, await Realpath(Path)) } catch { return false }
+  }
+  const Groups = await Promise.all(Entries.map(async Entry => {
+    const Path = Join(ProjectDirectory, Entry.name)
+    if (Entry.isSymbolicLink() || !(await Contained(Path))) return []
+    if (Entry.isFile()) {
+      return Extname(Entry.name).toLowerCase() === '.hbr'
+        ? [{ name: Basename(Entry.name, Extname(Entry.name)), path: Path }] : []
+    }
+    if (!Entry.isDirectory() || ResourceNames.has(Key(Entry.name))) return []
+    // Only inspect a project's immediate files; never descend into its assets.
+    const Children = await Readdir(Path, { withFileTypes: true }).catch(() => [])
+    const Files = (await Promise.all(Children.filter(File => File.isFile() && !File.isSymbolicLink() && Extname(File.name).toLowerCase() === '.hbr').map(async File => {
+      const FilePath = Join(Path, File.name)
+      return await Contained(FilePath) ? { name: File.name, path: FilePath } : null
+    }))).filter((File): File is NonNullable<typeof File> => File !== null)
+    return Files.map(File => ({ name: Files.length === 1 ? Entry.name : `${Entry.name} / ${Basename(File.name, Extname(File.name))}`, path: File.path }))
+  }))
+  return Groups.flat().sort((A, B) => A.name.localeCompare(B.name, 'zh-CN') || (A.path < B.path ? -1 : A.path > B.path ? 1 : 0))
+}
+
 async function ServeStatic(Request: IncomingMessage, Response: ServerResponse, StaticDir: string): Promise<void> {
   if (Request.method !== 'GET' && Request.method !== 'HEAD') throw new HttpError(405, '此资源仅支持 GET 或 HEAD。')
   let Pathname: string
@@ -184,6 +212,7 @@ export function CreateAppServer(Options: Options): Server {
 
   async function Api(Path: string, Body: Body, Session: Session): Promise<unknown> {
     if (Path === '/api/ping') return {}
+    if (Path === '/api/projects') return Projects(ProjectDirectory)
     if (Path === '/api/browse') {
       if (Body.path === undefined) await Mkdir(ProjectDirectory, { recursive: true })
       return Browse(Body.path === undefined ? ProjectDirectory : PathFrom(Body.path), ProjectDirectory)

@@ -5,6 +5,7 @@ import { tmpdir as Tmpdir } from 'node:os'
 import { join as Join, resolve as Resolve } from 'node:path'
 import Sharp from 'sharp'
 import { afterEach as AfterEach, describe as Describe, expect as Expect, it as It, vi as Vi } from 'vitest'
+import { parse as Parse } from 'yaml'
 import { EmptyDocument, type BoardDocument } from '../Shared/Types'
 import { CreateAppServer } from './Http'
 import { ImageStore } from './Storage'
@@ -190,8 +191,10 @@ Describe('local browser HTTP server', () => {
     const Created = await Call('/api/new', { name: 'First', document: Document })
     Expect(Created.status).toBe(200)
     Expect(Created.body).toEqual({ path: Path })
-    Expect(ReaddirSync(Join(ProjectDirectory, 'First', 'FirstResource'))).toEqual([`${Imported.body.assets[0].id}.png`])
-    Expect(ReadFileSync(Path, 'utf8')).toContain(`FirstResource/${Imported.body.assets[0].id}.png`)
+    const Saved = Parse(ReadFileSync(Path, 'utf8')) as BoardDocument
+    Expect(Saved.images[0].asset).toMatch(/^FirstResource\/[0-9]+_[0-9A-F]{8}\.png$/)
+    Expect(ExistsSync(Join(ProjectDirectory, 'First', Saved.images[0].asset))).toBe(true)
+    Expect(ReaddirSync(Join(ProjectDirectory, 'First', 'FirstResource'))).toHaveLength(1)
     const Loaded = await Call('/api/open', { path: Path }, { session: RandomUUID() })
     Expect(Loaded.body.document).toEqual(Document)
     Expect(Loaded.body.assets).toEqual(Imported.body.assets)
@@ -324,6 +327,67 @@ Describe('local browser HTTP server', () => {
     Expect(Result.status).toBe(200)
     Expect(Result.body.path).toBe(ProjectDirectory)
     Expect(Result.body.entries).toEqual([])
+    Expect(ReaddirSync(ProjectDirectory)).toEqual([])
+  })
+
+  It('lists project files without loading boards, recursing into resources or exposing linked folders', async () => {
+    const { call: Call, root: Root, projectDirectory: ProjectDirectory } = await App()
+    const DemoDirectory = Join(ProjectDirectory, 'Demo')
+    MkdirSync(Join(DemoDirectory, 'DemoResource'), { recursive: true })
+    WriteFileSync(Join(DemoDirectory, 'Demo.hbr'), 'not parsed during project listing')
+    WriteFileSync(Join(DemoDirectory, 'DemoResource', 'Hidden.hbr'), '')
+    MkdirSync(Join(ProjectDirectory, 'Empty'))
+    MkdirSync(Join(ProjectDirectory, 'Images'))
+    WriteFileSync(Join(ProjectDirectory, 'Images', 'Reference.png'), '')
+    MkdirSync(Join(ProjectDirectory, 'LooseResource'))
+    WriteFileSync(Join(ProjectDirectory, 'LooseResource', 'Hidden.hbr'), '')
+    WriteFileSync(Join(ProjectDirectory, 'Loose.hbr'), '')
+    MkdirSync(Join(ProjectDirectory, 'MyResource'))
+    WriteFileSync(Join(ProjectDirectory, 'MyResource', 'MyResource.hbr'), '')
+    WriteFileSync(Join(Root, 'Private.hbr'), '')
+    SymlinkSync(Root, Join(ProjectDirectory, 'Linked'), process.platform === 'win32' ? 'junction' : 'dir')
+    SymlinkSync(DemoDirectory, Join(ProjectDirectory, 'Alias'), process.platform === 'win32' ? 'junction' : 'dir')
+    const Result = await Call('/api/projects', {})
+    Expect(Result.status).toBe(200)
+    Expect(Result.body).toEqual([
+      { name: 'Demo', path: Join(DemoDirectory, 'Demo.hbr') },
+      { name: 'Loose', path: Join(ProjectDirectory, 'Loose.hbr') },
+      { name: 'MyResource', path: Join(ProjectDirectory, 'MyResource', 'MyResource.hbr') },
+    ])
+  })
+
+  It('sorts projects consistently, labels multiple boards and rescans newly created projects immediately', async () => {
+    const { call: Call, projectDirectory: ProjectDirectory } = await App()
+    for (const Name of ['Zulu', 'Renamed', 'Mixed', 'Alpha']) MkdirSync(Join(ProjectDirectory, Name))
+    WriteFileSync(Join(ProjectDirectory, 'Zulu', 'Zulu.hbr'), '')
+    WriteFileSync(Join(ProjectDirectory, 'Renamed', 'Original.HBR'), '')
+    WriteFileSync(Join(ProjectDirectory, 'Mixed', 'Other.hbr'), '')
+    WriteFileSync(Join(ProjectDirectory, 'Mixed', 'Mixed.hbr'), '')
+    WriteFileSync(Join(ProjectDirectory, 'Alpha', 'Alpha.hbr'), '')
+    const Expected = [
+      { name: 'Alpha', path: Join(ProjectDirectory, 'Alpha', 'Alpha.hbr') },
+      { name: 'Mixed / Mixed', path: Join(ProjectDirectory, 'Mixed', 'Mixed.hbr') },
+      { name: 'Mixed / Other', path: Join(ProjectDirectory, 'Mixed', 'Other.hbr') },
+      { name: 'Renamed', path: Join(ProjectDirectory, 'Renamed', 'Original.HBR') },
+      { name: 'Zulu', path: Join(ProjectDirectory, 'Zulu', 'Zulu.hbr') },
+    ]
+    Expect((await Call('/api/projects', {})).body).toEqual(Expected)
+    Expect((await Call('/api/projects', {})).body).toEqual(Expected)
+    Expect((await Call('/api/new', { name: 'Demo' })).status).toBe(200)
+    Expected.splice(1, 0, { name: 'Demo', path: Join(ProjectDirectory, 'Demo', 'Demo.hbr') })
+    Expect((await Call('/api/projects', {})).body).toEqual(Expected)
+  })
+
+  It('creates an absent project root and applies the same origin and session rules to project listing', async () => {
+    const { call: Call, projectDirectory: ProjectDirectory } = await App(false)
+    Expect(ExistsSync(ProjectDirectory)).toBe(false)
+    Expect((await Call('/api/projects', {}, { headers: { Origin: 'https://evil.example' } })).status).toBe(403)
+    Expect((await Call('/api/projects', {}, { session: 'invalid' })).status).toBe(400)
+    Expect((await Call('/api/projects')).status).toBe(405)
+    Expect(ExistsSync(ProjectDirectory)).toBe(false)
+    const Result = await Call('/api/projects', {})
+    Expect(Result.status).toBe(200)
+    Expect(Result.body).toEqual([])
     Expect(ReaddirSync(ProjectDirectory)).toEqual([])
   })
 

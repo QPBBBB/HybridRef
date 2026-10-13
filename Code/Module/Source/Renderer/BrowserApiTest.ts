@@ -117,10 +117,42 @@ Describe('browser API', () => {
 
   It('keeps the old last path when opening a file fails', async () => {
     Stored.set('hybridref.lastPath', 'D:/Old.hbr')
-    PathDialog.mockResolvedValueOnce('D:/Broken.hbr')
     Response({ error: '画板格式无效' }, 400)
-    await Expect(CreateBrowserApi().Open()).rejects.toThrow('画板格式无效')
+    await Expect(CreateBrowserApi().Open('D:/Broken.hbr')).rejects.toThrow('画板格式无效')
     Expect(Stored.get('hybridref.lastPath')).toBe('D:/Old.hbr')
+    Expect(PathDialog).not.toHaveBeenCalled()
+  })
+
+  It('scans projects on every request without changing the current project', async () => {
+    Stored.set('hybridref.lastPath', 'D:/Old.hbr')
+    const Entries = [{ name: 'Demo', path: 'D:/Git/HybridRef/Project/Demo/Demo.hbr' }]
+    Response(Entries); Response([])
+    const Api = CreateBrowserApi()
+    Expect(await Api.ListProjects()).toEqual(Entries)
+    Expect(await Api.ListProjects()).toEqual([])
+    Expect(Request().endpoint).toBe('/api/projects')
+    Expect(Request().body).toEqual({})
+    Expect(Request(1).endpoint).toBe('/api/projects')
+    Expect(Stored.get('hybridref.lastPath')).toBe('D:/Old.hbr')
+    Expect(PathDialog).not.toHaveBeenCalled()
+  })
+
+  It('reports project scan errors without forgetting the open project', async () => {
+    Stored.set('hybridref.lastPath', 'D:/Old.hbr')
+    Response({ error: '无法读取项目目录' }, 400)
+    await Expect(CreateBrowserApi().ListProjects()).rejects.toThrow('无法读取项目目录')
+    Expect(Stored.get('hybridref.lastPath')).toBe('D:/Old.hbr')
+  })
+
+  It('opens the selected project path without a file picker', async () => {
+    const Path = 'D:/Git/HybridRef/Project/Demo/Demo.hbr'
+    const Loaded = { path: Path, document: EmptyDocument(), assets: [] }
+    Response(Loaded)
+    Expect(await CreateBrowserApi().Open(Path)).toEqual(Loaded)
+    Expect(Request().endpoint).toBe('/api/open')
+    Expect(Request().body).toEqual({ path: Path })
+    Expect(PathDialog).not.toHaveBeenCalled()
+    Expect(Stored.get('hybridref.lastPath')).toBe(Path)
   })
 
   It('asks before overwriting a destination chosen in Save As', async () => {

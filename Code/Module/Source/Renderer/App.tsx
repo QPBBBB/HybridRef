@@ -1,5 +1,5 @@
 import React, { useEffect as UseEffect, useRef as UseRef, useState as UseState } from 'react'
-import { EmptyDocument, type BoardDocument, type BoardImage, type ImageAsset, type ImportResult, type LoadedBoard, type Viewport } from '../Shared/Types'
+import { EmptyDocument, type BoardDocument, type BoardImage, type ImageAsset, type ImportResult, type LoadedBoard, type ProjectEntry, type Viewport } from '../Shared/Types'
 import { AlignImages, BoundingBox, FitViewport, Intersects, RectFromPoints, ResizeGroup, ScreenToWorld, SnapMove, ZoomAt, type Point } from './Geometry'
 import { ClearImageCache, DecodeAssets } from './ImageCache'
 import { IsFileDialogOpen } from './FileDialog'
@@ -38,7 +38,6 @@ export default function App(): React.ReactElement {
   const Past = UseRef<BoardImage[][]>([])
   const Future = UseRef<BoardImage[][]>([])
   const Canvas = UseRef<HTMLDivElement>(null)
-  const FileInput = UseRef<HTMLInputElement>(null)
   const Gesture = UseRef<Gesture | null>(null)
   const [Marquee, SetMarquee] = UseState<ReturnType<typeof RectFromPoints> | null>(null)
   const [Guides, SetGuides] = UseState<Guide[]>([])
@@ -49,6 +48,14 @@ export default function App(): React.ReactElement {
   const WorkingRef = UseRef(1)
   const PendingSaves = UseRef(0)
   const [AlignOpen, SetAlignOpen] = UseState(false)
+  const [ProjectMenuOpen, SetProjectMenuOpen] = UseState(false)
+  const [ProjectEntries, SetProjectEntries] = UseState<ProjectEntry[]>([])
+  const [ProjectsLoading, SetProjectsLoading] = UseState(false)
+  const [ProjectsError, SetProjectsError] = UseState('')
+  const ProjectMenuRevision = UseRef(0)
+  const ProjectControl = UseRef<HTMLDivElement>(null)
+  const ProjectPanel = UseRef<HTMLDivElement>(null)
+  const OpenButton = UseRef<HTMLButtonElement>(null)
   const Session = UseRef(0)
   const StartupAllowed = UseRef(true)
   const InternalClipboard = UseRef<BoardImage[]>([])
@@ -90,6 +97,32 @@ export default function App(): React.ReactElement {
   }
   function ShowError(CaughtError: unknown): void { SetMessage(CaughtError instanceof Error ? CaughtError.message : String(CaughtError)) }
   function MayDiscard(): boolean { return !DirtyRef.current || window.confirm('当前画板尚未保存。放弃更改并继续？') }
+  function CloseProjectMenu(RestoreFocus = false): void {
+    ProjectMenuRevision.current += 1
+    SetProjectMenuOpen(false)
+    if (RestoreFocus) OpenButton.current?.focus()
+  }
+  function ToggleProjectMenu(): void {
+    if (WorkingRef.current) return
+    if (ProjectMenuOpen) { CloseProjectMenu(true); return }
+    SetAlignOpen(false)
+    SetProjectEntries([]); SetProjectsError(''); SetProjectsLoading(true)
+    SetProjectMenuOpen(true)
+  }
+  function ProjectMenuKeyDown(InputEvent: React.KeyboardEvent): void {
+    InputEvent.stopPropagation()
+    if (InputEvent.key === 'Escape' || ((InputEvent.ctrlKey || InputEvent.metaKey) && InputEvent.key.toLowerCase() === 'o')) {
+      InputEvent.preventDefault(); CloseProjectMenu(true); return
+    }
+    if (InputEvent.key === 'Tab') { CloseProjectMenu(true); return }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(InputEvent.key)) return
+    InputEvent.preventDefault()
+    const Items = Array.from(ProjectPanel.current!.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'))
+    const CurrentIndex = Items.indexOf(document.activeElement as HTMLButtonElement)
+    const NextIndex = InputEvent.key === 'Home' ? 0 : InputEvent.key === 'End' ? Items.length - 1
+      : (CurrentIndex + (InputEvent.key === 'ArrowDown' ? 1 : -1) + Items.length) % Items.length
+    Items[NextIndex]?.focus()
+  }
   function Reset(Next: BoardDocument, NextPath: string | null, NextAssets: ImageAsset[]): void {
     Session.current += 1
     ClearImageCache()
@@ -113,6 +146,7 @@ export default function App(): React.ReactElement {
   }
   async function NewBoard(): Promise<void> {
     if (WorkingRef.current) return
+    CloseProjectMenu(true)
     StartupAllowed.current = false
     if (!MayDiscard()) return
     const Revision = Session.current
@@ -124,14 +158,15 @@ export default function App(): React.ReactElement {
     catch (CaughtError) { ShowError(CaughtError) }
     finally { EndWork() }
   }
-  async function OpenBoard(): Promise<void> {
+  async function OpenBoard(ProjectPath: string): Promise<void> {
     if (WorkingRef.current) return
+    CloseProjectMenu(true)
     StartupAllowed.current = false
     if (!MayDiscard()) return
     const Revision = Session.current
     StartWork()
     try {
-      const Loaded = await window.HybridRef.Open()
+      const Loaded = await window.HybridRef.Open(ProjectPath)
       if (Loaded && Session.current === Revision) Reset(Loaded.document, Loaded.path, Loaded.assets)
     } catch (CaughtError) { ShowError(CaughtError) }
     finally { EndWork() }
@@ -327,6 +362,26 @@ export default function App(): React.ReactElement {
     window.document.title = `${Dirty ? '* ' : ''}${Path?.split(/[\\/]/).pop() || '未命名'} — HybridRef`
   }, [Path, Dirty])
   UseEffect(() => {
+    if (!ProjectMenuOpen) return
+    const Revision = ++ProjectMenuRevision.current
+    ProjectPanel.current?.querySelector<HTMLButtonElement>('button')?.focus()
+    void window.HybridRef.ListProjects().then((Entries) => {
+      if (Revision === ProjectMenuRevision.current) SetProjectEntries(Entries)
+    }).catch((CaughtError) => {
+      if (Revision === ProjectMenuRevision.current) SetProjectsError(CaughtError instanceof Error ? CaughtError.message : String(CaughtError))
+    }).finally(() => {
+      if (Revision === ProjectMenuRevision.current) SetProjectsLoading(false)
+    })
+    const Outside = (InputEvent: PointerEvent): void => {
+      if (InputEvent.target instanceof Node && !ProjectControl.current?.contains(InputEvent.target)) CloseProjectMenu()
+    }
+    window.addEventListener('pointerdown', Outside, true)
+    return () => {
+      ProjectMenuRevision.current += 1
+      window.removeEventListener('pointerdown', Outside, true)
+    }
+  }, [ProjectMenuOpen])
+  UseEffect(() => {
     const Element = Canvas.current!
     const Wheel = (InputEvent: WheelEvent) => {
       InputEvent.preventDefault()
@@ -343,13 +398,17 @@ export default function App(): React.ReactElement {
       if (EditingText(InputEvent.target)) return
       const Modifier = InputEvent.ctrlKey || InputEvent.metaKey
       const Key = InputEvent.key.toLowerCase()
+      if (ProjectMenuOpen) {
+        if (Key === 'escape' || (Modifier && Key === 'o')) { InputEvent.preventDefault(); CloseProjectMenu(true) }
+        return
+      }
       if (InputEvent.code === 'Space') { InputEvent.preventDefault(); Space.current = true; SetSpaceHeld(true); return }
       if (Key === 'escape') { Finish(undefined, true); Select([]); SetAlignOpen(false); return }
       const Action = Modifier ? ({
         a: () => Select(Current.current.images.map((Item) => Item.id)),
         d: () => InsertCopies(Current.current.images.filter((Item) => Selection.current.includes(Item.id)), 24),
         z: () => History(InputEvent.shiftKey ? 'redo' : 'undo'), y: () => History('redo'),
-        s: () => { void SaveBoard(InputEvent.shiftKey) }, o: () => { void OpenBoard() },
+        s: () => { void SaveBoard(InputEvent.shiftKey) }, o: ToggleProjectMenu,
       } as Record<string, (() => void)>)[Key] : ({
         delete: DeleteSelected, backspace: DeleteSelected, f: Fit,
         '+': () => ChangeZoom(Current.current.viewport.zoom * 1.2), '=': () => ChangeZoom(Current.current.viewport.zoom * 1.2), '-': () => ChangeZoom(Current.current.viewport.zoom / 1.2),
@@ -358,9 +417,9 @@ export default function App(): React.ReactElement {
     }
     const Up = (InputEvent: KeyboardEvent) => { if (InputEvent.code === 'Space') { Space.current = false; SetSpaceHeld(false) } }
     const Blur = () => { Space.current = false; SetSpaceHeld(false); Finish(undefined, true) }
-    const Copied = (InputEvent: ClipboardEvent) => { if (!EditingText(InputEvent.target)) Copy(InputEvent) }
-    const Cut = (InputEvent: ClipboardEvent) => { if (!EditingText(InputEvent.target)) Copy(InputEvent, true) }
-    const Pasted = (InputEvent: ClipboardEvent) => { if (!EditingText(InputEvent.target)) Paste(InputEvent) }
+    const Copied = (InputEvent: ClipboardEvent) => { if (!ProjectMenuOpen && !EditingText(InputEvent.target)) Copy(InputEvent) }
+    const Cut = (InputEvent: ClipboardEvent) => { if (!ProjectMenuOpen && !EditingText(InputEvent.target)) Copy(InputEvent, true) }
+    const Pasted = (InputEvent: ClipboardEvent) => { if (!ProjectMenuOpen && !EditingText(InputEvent.target)) Paste(InputEvent) }
     window.addEventListener('keydown', Down); window.addEventListener('keyup', Up); window.addEventListener('blur', Blur)
     window.addEventListener('copy', Copied); window.addEventListener('cut', Cut); window.addEventListener('paste', Pasted)
     return () => {
@@ -373,13 +432,21 @@ export default function App(): React.ReactElement {
   const View = Document.viewport
   const SelectionStyle = Bounds ? { left: View.x + Bounds.x * View.zoom, top: View.y + Bounds.y * View.zoom, width: Bounds.width * View.zoom, height: Bounds.height * View.zoom } : undefined
   return <div className="app" data-history-version={HistoryVersion}>
-    <input ref={FileInput} data-testid="file-input" type="file" hidden multiple accept="image/*,.tif,.tiff,.avif,.heic,.heif" disabled={Working > 0} onChange={(InputEvent) => { const Files = Array.from(InputEvent.target.files || []); InputEvent.target.value = ''; void ImportFiles(Files) }} />
     <header className="toolbar">
       <span className="brand">HybridRef</span>
-      <button data-testid="new" disabled={Working > 0} title="新建画板" onClick={() => void NewBoard()}>新建</button>
-      <button data-testid="open" disabled={Working > 0} title="打开 · Ctrl+O" onClick={() => void OpenBoard()}>打开</button>
+      <div ref={ProjectControl} className="project-control">
+        <button ref={OpenButton} data-testid="open" disabled={Working > 0} title="打开项目 · Ctrl+O" aria-haspopup="menu" aria-expanded={ProjectMenuOpen} aria-controls={ProjectMenuOpen ? 'project-menu' : undefined} onClick={ToggleProjectMenu}
+          onKeyDown={(InputEvent) => { if (!ProjectMenuOpen && (InputEvent.key === 'ArrowDown' || InputEvent.key === 'ArrowUp')) { InputEvent.preventDefault(); ToggleProjectMenu() } }}>打开 ▾</button>
+        {ProjectMenuOpen && <div ref={ProjectPanel} id="project-menu" data-testid="project-menu" className="project-menu" role="menu" aria-label="项目" onKeyDown={ProjectMenuKeyDown}>
+          <button data-testid="new" className="project-create" role="menuitem" disabled={Working > 0} onClick={() => void NewBoard()}>+ 新建项目</button>
+          <div className="project-menu-list" role="group" aria-label="现有项目">
+            {ProjectsLoading ? <p role="status">正在读取项目…</p> : ProjectsError ? <p className="project-menu-error" role="alert">{ProjectsError}</p>
+              : ProjectEntries.length ? ProjectEntries.map((Entry) => <button key={Entry.path} data-testid="project-entry" role="menuitem" aria-current={Path === Entry.path ? 'true' : undefined} className={Path === Entry.path ? 'current' : undefined} title={Entry.path} disabled={Working > 0} onClick={() => void OpenBoard(Entry.path)}><span>{Entry.name}</span>{Path === Entry.path && <span className="project-current" aria-hidden="true">●</span>}</button>)
+                : <p role="status">Project 中还没有项目</p>}
+          </div>
+        </div>}
+      </div>
       <button data-testid="save" disabled={Working > PendingSaves.current} title="保存 · Ctrl+S / 另存为 · Ctrl+Shift+S" onClick={() => void SaveBoard()}>保存{Dirty ? ' ·' : ''}</button>
-      <button data-testid="import" disabled={Working > 0} title="导入图片，也可以拖入或粘贴截图" onClick={() => FileInput.current?.click()}>导入图片</button>
       <span className="divider" />
       <button data-testid="undo" title="撤销 · Ctrl+Z" disabled={!Past.current.length} onClick={() => History('undo')}>↶</button>
       <button data-testid="redo" title="重做 · Ctrl+Shift+Z / Ctrl+Y" disabled={!Future.current.length} onClick={() => History('redo')}>↷</button>

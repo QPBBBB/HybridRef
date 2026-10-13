@@ -5,12 +5,14 @@ export interface ImageAsset { id: string; dataUrl: string; width: number; height
 export interface LoadedBoard { path: string; document: BoardDocument; assets: ImageAsset[] }
 export interface ImportResult { assets: ImageAsset[]; errors: string[] }
 export interface SaveResult { path: string }
+export interface ProjectEntry { name: string; path: string }
 export interface BrowseEntry { name: string; path: string; kind: 'directory' | 'file' }
 export interface BrowseResult { path: string; parent: string | null; entries: BrowseEntry[]; roots: string[] }
 export interface HybridRefApi {
   Startup(): Promise<LoadedBoard | null>
   NewProject(): Promise<LoadedBoard | null>
-  Open(): Promise<LoadedBoard | null>
+  ListProjects(): Promise<ProjectEntry[]>
+  Open(Path: string): Promise<LoadedBoard>
   Save(Document: BoardDocument, Path: string | null): Promise<SaveResult | null>
   ImportBytes(Files: { name: string; bytes: Uint8Array }[]): Promise<ImportResult>
   SetDirty(Dirty: boolean): void
