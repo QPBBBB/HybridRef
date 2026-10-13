@@ -53,7 +53,7 @@
 
 项目自有文件、函数和变量统一使用 PascalCase 命名。第三方 API、工具要求的配置文件名、已有 `.hbr` 存储字段及归档的上游代码保持兼容。
 
-根目录只保留 `Code`、`Project`、`.gitignore`、`.gitattributes`、本说明和 `Start.cmd`（另有隐藏的 `.git` 仓库元数据）。启动实现、运行缓存和开发规范均在 `Code` 内；项目许可证见 [Code/LICENSE](Code/LICENSE)。
+根目录只保留 `Code`、`Project`、`.gitignore`、本说明和 `Start.cmd`（另有隐藏的 `.git` 仓库元数据）。启动实现、运行缓存和开发规范均在 `Code` 内。
 
 ```text
 Code/Module/Source/Server/     本地 HTTP 服务、图片导入与 YAML 存储
@@ -76,4 +76,6 @@ pnpm build
 pnpm exec playwright test
 ```
 
-`pnpm start` 构建缺失或过期代码并打开浏览器；`pnpm dev` 强制重新构建后打开。启动日志见 `Code/Module/Runtime/Logs/Launcher.log`，服务日志见 `Code/Module/Runtime/Logs/Server.log`。新环境首次运行需要 Node.js 22+ 与网络安装依赖。Citadel 来源和授权保留在 [Code/UPSTREAM.md](Code/UPSTREAM.md)。
+`pnpm start` 构建缺失或过期代码并打开浏览器；`pnpm dev` 强制重新构建后打开。启动日志见 `Code/Module/Runtime/Logs/Launcher.log`，服务日志见 `Code/Module/Runtime/Logs/Server.log`。新环境首次运行需要 Node.js 22+ 与网络安装依赖。
+
+项目最初参考 Kieran Beckenkrager 的 [Citadel](https://github.com/kannibalk1w1/Citadel)，导入版本为 `0.4.0`，提交为 `be207e612a7e07ae78d26635e94d0e67169c8c6e`。旧实现存放在 `Code/Module/reference/citadel`，不参与当前构建；上游 MIT 许可证和第三方声明保留在 [Code/Module/LICENSE](Code/Module/LICENSE)、[Code/Module/THIRD_PARTY_NOTICES.md](Code/Module/THIRD_PARTY_NOTICES.md) 和 `Code/Module/licenses/`。
