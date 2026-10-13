@@ -20,7 +20,7 @@ type Gesture = {
 const Fingerprint = (Images: readonly BoardImage[]): string => JSON.stringify(Images)
 const Uuid = (): string => crypto.randomUUID()
 const ClipboardType = 'application/x-hybridref-items'
-const AlignmentOptions: [Alignment, string][] = [['left', '左对齐'], ['centerX', '水平居中'], ['right', '右对齐'], ['top', '顶对齐'], ['centerY', '垂直居中'], ['bottom', '底对齐']]
+const AlignmentShortcuts: Record<string, Alignment> = { l: 'left', h: 'centerX', r: 'right', t: 'top', v: 'centerY', b: 'bottom' }
 
 export default function App(): React.ReactElement {
   const [Document, SetDocument] = UseState<BoardDocument>(EmptyDocument)
@@ -47,7 +47,6 @@ export default function App(): React.ReactElement {
   const [Working, SetWorking] = UseState(1)
   const WorkingRef = UseRef(1)
   const PendingSaves = UseRef(0)
-  const [AlignOpen, SetAlignOpen] = UseState(false)
   const [ProjectMenuOpen, SetProjectMenuOpen] = UseState(false)
   const [ProjectEntries, SetProjectEntries] = UseState<ProjectEntry[]>([])
   const [ProjectsLoading, SetProjectsLoading] = UseState(false)
@@ -105,7 +104,6 @@ export default function App(): React.ReactElement {
   function ToggleProjectMenu(): void {
     if (WorkingRef.current) return
     if (ProjectMenuOpen) { CloseProjectMenu(true); return }
-    SetAlignOpen(false)
     SetProjectEntries([]); SetProjectsError(''); SetProjectsLoading(true)
     SetProjectMenuOpen(true)
   }
@@ -279,7 +277,6 @@ export default function App(): React.ReactElement {
   }
   function Align(Mode: Alignment): void {
     Images(AlignImages(Current.current.images, Selection.current, Mode))
-    SetAlignOpen(false)
   }
 
   function LocalPoint(ClientX: number, ClientY: number): Point {
@@ -403,7 +400,12 @@ export default function App(): React.ReactElement {
         return
       }
       if (InputEvent.code === 'Space') { InputEvent.preventDefault(); Space.current = true; SetSpaceHeld(true); return }
-      if (Key === 'escape') { Finish(undefined, true); Select([]); SetAlignOpen(false); return }
+      if (Key === 'escape') { Finish(undefined, true); Select([]); return }
+      if (!Modifier && !InputEvent.altKey && !InputEvent.shiftKey && !InputEvent.isComposing && !InputEvent.repeat
+        && !WorkingRef.current && !Gesture.current && !Space.current && Selection.current.length >= 2) {
+        const AlignmentMode = AlignmentShortcuts[Key]
+        if (AlignmentMode) { InputEvent.preventDefault(); Align(AlignmentMode); return }
+      }
       const Action = Modifier ? ({
         a: () => Select(Current.current.images.map((Item) => Item.id)),
         d: () => InsertCopies(Current.current.images.filter((Item) => Selection.current.includes(Item.id)), 24),
@@ -447,13 +449,6 @@ export default function App(): React.ReactElement {
         </div>}
       </div>
       <button data-testid="save" disabled={Working > PendingSaves.current} title="保存 · Ctrl+S / 另存为 · Ctrl+Shift+S" onClick={() => void SaveBoard()}>保存{Dirty ? ' ·' : ''}</button>
-      <span className="divider" />
-      <button data-testid="undo" title="撤销 · Ctrl+Z" disabled={!Past.current.length} onClick={() => History('undo')}>↶</button>
-      <button data-testid="redo" title="重做 · Ctrl+Shift+Z / Ctrl+Y" disabled={!Future.current.length} onClick={() => History('redo')}>↷</button>
-      <div className="align-control">
-        <button data-testid="align-menu" disabled={Selected.length < 2} aria-expanded={AlignOpen} onClick={() => SetAlignOpen(!AlignOpen)}>对齐 ▾</button>
-        {AlignOpen && Selected.length > 1 && <div className="align-menu">{AlignmentOptions.map(([Mode, Label]) => <button key={Mode} data-testid={`align-${Mode}`} onClick={() => Align(Mode)}>{Label}</button>)}</div>}
-      </div>
       <span className="filename" title={Path || undefined}>{Path?.split(/[\\/]/).pop() || '未命名画板'}</span>
       {Working > 0 && <span className="working" role="status">处理中…</span>}
     </header>

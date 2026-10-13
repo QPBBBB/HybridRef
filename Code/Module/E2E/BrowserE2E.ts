@@ -1,10 +1,12 @@
 import { test as Test, expect as Expect, type Page } from '@playwright/test'
 import { spawn as Spawn, type ChildProcess } from 'node:child_process'
-import { cp as Cp, mkdir as Mkdir, mkdtemp as Mkdtemp, readFile as ReadFile, stat as Stat } from 'node:fs/promises'
+import { createHash as CreateHash } from 'node:crypto'
+import { cp as Cp, mkdir as Mkdir, mkdtemp as Mkdtemp, readFile as ReadFile, stat as Stat, writeFile as WriteFile } from 'node:fs/promises'
 import { basename as Basename, dirname as Dirname, join as Join, resolve as Resolve } from 'node:path'
 import { tmpdir as Tmpdir } from 'node:os'
 import Sharp from 'sharp'
-import { parse as Parse } from 'yaml'
+import { parse as Parse, stringify as Stringify } from 'yaml'
+import { EmptyDocument } from '../Source/Shared/Types'
 
 const ModuleRoot = Resolve(__dirname, '..')
 let Service: ChildProcess
@@ -16,7 +18,20 @@ Test.beforeAll(async () => {
   Fixture = await Mkdtemp(Join(Tmpdir(), 'hybridref-browser-'))
   ProjectDirectory = Join(Fixture, 'Project')
   await Mkdir(ProjectDirectory)
-  await Cp(Resolve(ModuleRoot, '../../Project/Demo'), Join(ProjectDirectory, 'Demo'), { recursive: true })
+  // Use a private fixture: the repository Demo is an editable user project.
+  const DemoDirectory = Join(ProjectDirectory, 'Demo')
+  await Mkdir(Join(DemoDirectory, 'DemoResource'), { recursive: true })
+  const Document = EmptyDocument()
+  Document.viewport = { x: 90, y: 180, zoom: 1 }
+  for (let Index = 0; Index < 3; Index++) {
+    const Width = 240 + Index * 40, Height = 180 + Index * 40
+    const Bytes = await Sharp({ create: { width: Width, height: Height, channels: 3, background: ['#497988', '#98617a', '#70956b'][Index] } }).png().toBuffer()
+    const HashPrefix = CreateHash('sha256').update(Bytes).digest('hex').slice(0, 8).toUpperCase()
+    const Filename = `${1700000000000 + Index}_${HashPrefix}.png`
+    await WriteFile(Join(DemoDirectory, 'DemoResource', Filename), Bytes)
+    Document.images.push({ id: `reference-${Index + 1}`, asset: `DemoResource/${Filename}`, x: Index * 380, y: Index === 1 ? 100 : 0, width: 350, height: 350 * Height / Width })
+  }
+  await WriteFile(Join(DemoDirectory, 'Demo.hbr'), Stringify(Document))
   const Runtime = Join(Fixture, 'Server.json')
   Service = Spawn(process.execPath, [Join(ModuleRoot, 'Output/Server/Index.cjs'), '--port', '0', '--runtime', Runtime, '--project-directory', ProjectDirectory], { cwd: Fixture, stdio: 'ignore', windowsHide: true })
   await Expect.poll(async () => {
@@ -74,6 +89,9 @@ Test('browser editor preserves canvas interactions, clipboard events and real YA
   await Expect(Page.getByTestId('open')).toBeEnabled()
   await Expect(Page.getByTestId('import')).toHaveCount(0)
   await Expect(Page.getByTestId('file-input')).toHaveCount(0)
+  await Expect(Page.getByTestId('undo')).toHaveCount(0)
+  await Expect(Page.getByTestId('redo')).toHaveCount(0)
+  await Expect(Page.getByTestId('align-menu')).toHaveCount(0)
   await DropImages(Page, Sources)
   const Images = Page.getByTestId('image-item')
   await Expect(Images).toHaveCount(3)
@@ -87,8 +105,21 @@ Test('browser editor preserves canvas interactions, clipboard events and real YA
   await Page.mouse.move(First.x + First.width / 2 + 75, First.y + First.height / 2 + 35, { steps: 8 })
   await Page.mouse.up()
   Expect(Number(await Images.first().getAttribute('data-x'))).not.toBe(OldX)
-  await Page.getByTestId('align-menu').click()
-  await Page.getByTestId('align-top').click()
+  const BeforeAlignment = await Images.evaluateAll(Nodes => Nodes.map(Node => ({
+    x: Number(Node.getAttribute('data-x')), y: Number(Node.getAttribute('data-y')),
+    width: Number(Node.getAttribute('data-width')), height: Number(Node.getAttribute('data-height')),
+  })))
+  for (const [Key, Axis, Factor] of [['l', 'x', 0], ['h', 'x', 0.5], ['r', 'x', 1], ['t', 'y', 0], ['v', 'y', 0.5], ['b', 'y', 1]] as const) {
+    await Page.keyboard.press(Key)
+    const Positions = await Images.evaluateAll((Nodes, Options) => Nodes.map(Node => Number(Node.getAttribute(`data-${Options.Axis}`)) + Options.Factor * Number(Node.getAttribute(Options.Axis === 'x' ? 'data-width' : 'data-height'))), { Axis, Factor })
+    for (const Position of Positions) Expect(Position).toBeCloseTo(Positions[0], 6)
+    await Page.keyboard.press('Control+z')
+    Expect(await Images.evaluateAll(Nodes => Nodes.map(Node => ({
+      x: Number(Node.getAttribute('data-x')), y: Number(Node.getAttribute('data-y')),
+      width: Number(Node.getAttribute('data-width')), height: Number(Node.getAttribute('data-height')),
+    })))).toEqual(BeforeAlignment)
+  }
+  await Page.keyboard.press('t')
   Expect(new Set(await Images.evaluateAll(Nodes => Nodes.map(Node => Node.getAttribute('data-y')))).size).toBe(1)
 
   const Dimensions = await Images.evaluateAll(Nodes => Nodes.map(Node => [Number(Node.getAttribute('data-width')), Number(Node.getAttribute('data-height'))]))
@@ -196,8 +227,8 @@ Test('project dropdown opens the existing demo and supports marquee/Shift select
 Test('separate browser tabs keep independent image stores', async ({ page: Page, context: Context }) => {
   const Folder = Join(Fixture, 'tabs')
   await Mkdir(Folder)
-  await Cp(Resolve(ModuleRoot, '../../Project/Demo/Demo.hbr'), Join(Folder, 'Demo.hbr'))
-  await Cp(Resolve(ModuleRoot, '../../Project/Demo/DemoResource'), Join(Folder, 'DemoResource'), { recursive: true })
+  await Cp(Join(ProjectDirectory, 'Demo/Demo.hbr'), Join(Folder, 'Demo.hbr'))
+  await Cp(Join(ProjectDirectory, 'Demo/DemoResource'), Join(Folder, 'DemoResource'), { recursive: true })
   await Page.goto(`${ServiceUrl}/?project=${encodeURIComponent(Join(Folder, 'Demo.hbr'))}`)
   await Expect(Page.getByTestId('image-item')).toHaveCount(3)
   const Other = await Context.newPage()
@@ -216,8 +247,8 @@ Test('separate browser tabs keep independent image stores', async ({ page: Page,
 Test('new projects use their own folder below Project even after opening an external board', async ({ page: Page }) => {
   const Folder = Join(Fixture, 'Outside')
   await Mkdir(Folder)
-  await Cp(Resolve(ModuleRoot, '../../Project/Demo/Demo.hbr'), Join(Folder, 'Demo.hbr'))
-  await Cp(Resolve(ModuleRoot, '../../Project/Demo/DemoResource'), Join(Folder, 'DemoResource'), { recursive: true })
+  await Cp(Join(ProjectDirectory, 'Demo/Demo.hbr'), Join(Folder, 'Demo.hbr'))
+  await Cp(Join(ProjectDirectory, 'Demo/DemoResource'), Join(Folder, 'DemoResource'), { recursive: true })
   await Page.goto(`${ServiceUrl}/?project=${encodeURIComponent(Join(Folder, 'Demo.hbr'))}`)
   await Expect(Page.getByTestId('image-item')).toHaveCount(3)
   await StartNewProject(Page)
@@ -271,7 +302,7 @@ Test('project menu refreshes on open, supports keyboard control and asks about e
 
   await Page.getByTestId('open').click()
   await Expect(Page.getByTestId('project-entry').filter({ hasText: 'FreshlyAdded' })).toHaveCount(0)
-  await Cp(Resolve(ModuleRoot, '../../Project/Demo'), Join(ProjectDirectory, 'FreshlyAdded'), { recursive: true })
+  await Cp(Join(ProjectDirectory, 'Demo'), Join(ProjectDirectory, 'FreshlyAdded'), { recursive: true })
   await Page.getByTestId('canvas').click({ position: { x: 1250, y: 760 } })
   await Expect(Page.getByTestId('project-menu')).toHaveCount(0)
   await Page.getByTestId('open').click()
