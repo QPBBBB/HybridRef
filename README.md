@@ -1,90 +1,63 @@
 # HybridRef
 
-一个直接在浏览器中编辑的图片参考画布，React Web UI，黑色主题。没有 Electron 桌面窗口；本地 Node.js 服务负责读写 `.hbr` 和图片资源。
+在浏览器中编辑的黑色图片参考画布。React 前端提供无限画布，本地 Node.js 服务负责读写项目和图片，仅监听 `127.0.0.1`。
 
-## 启动
+## 使用
 
-双击根目录 **Start.cmd**，启动器会启动本地服务并打开系统默认浏览器。Edge、Chrome 和 Firefox 会打开一个普通浏览器窗口。本机依赖已经准备好；源代码改变后启动器会自动构建。
-
-页面地址为 `http://127.0.0.1:<本地端口>/`，仅在本机监听。再次启动会复用当前版本的服务。推荐使用 Chrome 或 Edge。
+Windows 下双击根目录 `Start.cmd`，启动器会构建缺失或过期代码、启动服务并打开默认浏览器。需要 Node.js 22+；首次安装缺失依赖时需要网络。
 
 ```powershell
-# 打开 Project/Demo/Demo.hbr 演示画板
-.\Start.cmd -Demo
-
-# 打开自己的画板，也可以把 .hbr 拖到启动器上
-.\Start.cmd 'D:\参考\TestRef.hbr'
+.\Start.cmd                                  # 打开编辑器
+.\Start.cmd -Demo                            # 打开 Project/Demo/Demo.hbr
+.\Start.cmd 'D:\参考\TestRef.hbr'             # 打开指定项目，也可拖到启动器上
 ```
 
-## 这一版包含什么
+从“打开 → 新建项目”输入名称并确认，或直接拖入图片、按 Ctrl+V 粘贴截图后保存。“打开”菜单每次展开都会扫描仓库的 `Project/` 目录，选择项目即可切换。
 
-- 单个无限画布，拖入图片或按 Ctrl+V 粘贴图片、系统截图。
-- 框选、Shift 多选，整体移动，边缘/中心吸附和辅助线；Alt 临时关闭吸附。
-- 左、中、右、上、中、下对齐；选框四角等比缩放单图或整组。
-- 中键或空格拖动平移，滚轮围绕鼠标缩放，F 适应全部图片。
-- 复制、剪切、粘贴、删除、撤销和重做。
-- 工具栏不显示撤销、重做和对齐按钮；这些操作使用下方快捷键。
-- 黑色界面，没有文字项、侧栏、多画板、音视频、录制或欢迎弹窗。
-- “打开”下拉菜单首项为“新建项目”；选择后输入并确认项目名，立即创建 `Project/<Name>/<Name>.hbr` 和同目录的 `<Name>Resource/`，空白项目也会创建资源文件夹。
-- “打开”下拉菜单列出 `Project/` 中的项目，展开时重新扫描，可直接选择打开。另存为通过网页中的文件窗口选择本地目录和文件名。每个浏览器标签页的图片缓存相互独立。
+拖动图片移动，框选或 Shift+单击多选，拖选框四角等比缩放。移动时提供边缘、中心吸附和辅助线，按 Alt 临时关闭吸附。
+
+“保存”按钮旁的 `*` 表示有未保存的图片或布局修改，全部保存后消失。新建或切换项目时会提示未保存修改；关闭或刷新页面前也应先保存。每个标签页使用独立的图片缓存。
+
+## 快捷键
 
 | 操作 | 快捷键 |
 | --- | --- |
 | 打开 / 保存 / 另存为 | Ctrl+O / Ctrl+S / Ctrl+Shift+S |
-| 全选 / 复制 / 剪切 / 粘贴 | Ctrl+A / C / X / V |
-| 直接创建所选图片的副本 | Ctrl+D |
+| 全选 / 复制 / 剪切 / 粘贴 | Ctrl+A / Ctrl+C / Ctrl+X / Ctrl+V |
+| 复制所选图片 | Ctrl+D |
 | 删除 | Delete / Backspace |
 | 撤销 / 重做 | Ctrl+Z / Ctrl+Shift+Z 或 Ctrl+Y |
-| 左对齐 / 水平居中 / 右对齐 | L / H / R |
-| 顶对齐 / 垂直居中 / 底对齐 | T / V / B |
-| 适应画布 | F |
-| 平移 | 中键拖动，或按住空格拖动 |
-| 画布缩放 | 鼠标滚轮 |
+| 向左 / 右 / 上 / 下贴紧 | Ctrl+对应方向箭头 |
+| 向右 / 上 / 下贴紧 | R / T / B |
+| 水平居中 / 垂直居中 | H / V |
+| 等宽 / 等高 | Ctrl+Alt+右箭头 / Ctrl+Alt+左箭头 |
+| 适应全部图片 | F |
+| 平移 | 中键拖动，或空格+拖动 |
+| 缩放 | 鼠标滚轮，或 + / − |
 
-对齐快捷键直接按字母，不需要组合键；仅在选中至少两张图片、且未在输入框中输入时生效。
+贴紧、居中、等宽和等高需要至少两张选中图片，输入或菜单打开时不触发。`L` 未绑定。
 
-## 文件和内存
+方向贴紧只移动指定轴，压缩间隙直到贴上其他选中图片，间距为零；另一轴、尺寸和层级不变，不相交的行或列互不阻挡。等宽/等高取所选图片当前宽度/高度的平均值，保持每张图片的比例和中心位置。这些操作均可撤销、重做。
 
-`D:\参考\TestRef.hbr` 保存为可直接 diff 的 YAML；图片保存在同目录 `TestRefResource\<13位Unix毫秒时间戳>_<8位大写Hash>.png`，例如 `1791870000000_3A8F10C2.png`，Hash 取图片内容 SHA256 的前 8 位。文件和资源目录一起移动即可。
+## 项目文件
 
-默认项目根目录为仓库内的 `Project/`，相对于仓库位置解析，移动整个仓库后仍可使用。每个新项目独占一个同名文件夹，例如项目 `TestRef` 保存为 `Project/TestRef/TestRef.hbr`，图片放入 `Project/TestRef/TestRefResource/`。
-
-所有导入图片统一转为原分辨率的无损压缩 PNG；动画图片只取第一帧。相同图片共用资源。资源仅使用上述时间戳与短 Hash 命名，名称只分配一次，重复保存不改名。图片内容和解码结果缓存在内存，保存时无需重新读取外部原图。布局存储稳定 ID、相对资源路径和几何数值，不另写保存时间；相同状态重复保存保持相同文本。
-
-保存先写资源，再原子替换 YAML；不会自动删除未引用图片，避免误删。只有成功保存才解除未保存标记。第一版缓存常驻内存；新建、打开另一画板会替换当前标签页的缓存，退出本地服务会释放全部缓存。
-
-关闭或刷新有未保存修改的标签页时，浏览器会提醒。先保存，再关闭。服务和文件都留在本机，不需要上传到网站或登录账户。
-
-文档采用 `formatVersion: 2`，画布内容为 `viewport` 和 `images`。旧版多画板文件不会被简版读写或覆盖。演示项目为 `Project/Demo/Demo.hbr`，三张图片资源位于同目录的 `DemoResource/`。`pnpm demo` 可从现有捆绑资源创建缺失的演示项目；已有 `Demo.hbr` 时会拒绝覆盖。
-
-## 开发
-
-项目自有文件、函数和变量统一使用 PascalCase 命名。第三方 API、工具要求的配置文件名、已有 `.hbr` 存储字段及归档的上游代码保持兼容。
-
-根目录只保留 `Code`、`Project`、`.gitignore`、本说明和 `Start.cmd`（另有隐藏的 `.git` 仓库元数据）。启动实现、运行缓存和开发规范均在 `Code` 内。
+新建或首次保存未命名画板时，按名称创建以下结构，空白项目也会创建资源目录：
 
 ```text
-Code/Module/Source/Server/     本地 HTTP 服务、图片导入与 YAML 存储
-Code/Module/Source/Renderer/   图片画布、交互与内存缓存
-Code/Module/Source/Shared/     文档和接口类型
-Code/Module/Scripts/           启动和构建脚本
-Code/Module/Runtime/           本机运行状态、日志与测试截图（不进 Git）
-Code/Resource/              图标等资源
-Code/Module/reference/     上一版 Citadel 实现，仅供参考
-Project/Demo/Demo.hbr     演示项目文件
-Project/Demo/DemoResource/ 演示图片资源
+Project/<Name>/
+├─ <Name>.hbr
+└─ <Name>Resource/
+   └─ 1791870000000_3A8F10C2.png
 ```
 
-```powershell
-cd Code\Module
-pnpm install --frozen-lockfile
-pnpm dev
-pnpm typecheck
-pnpm test:run
-pnpm build
-pnpm exec playwright test
-```
+`Project/` 相对于仓库位置解析。另存为也可选择其他目录；`.hbr` 与同目录的 `<文件名>Resource/` 一起移动即可。`Project/Demo/Demo.hbr` 是可编辑的项目，不会在启动时重建。
 
-`pnpm start` 构建缺失或过期代码并打开浏览器；`pnpm dev` 强制重新构建后打开。启动日志见 `Code/Module/Runtime/Logs/Launcher.log`，服务日志见 `Code/Module/Runtime/Logs/Server.log`。新环境首次运行需要 Node.js 22+ 与网络安装依赖。
+`.hbr` 使用可 diff 的确定性 YAML，当前格式为 `formatVersion: 2`，保存视口和图片布局。导入图片转为原分辨率的无损压缩 PNG，动画只取第一帧。资源名为 `13位Unix毫秒时间戳_8位大写Hash.png`，Hash 取 PNG 内容 SHA256 的前 8 位；名称分配后保持稳定，相同图片共用资源。
 
-项目最初参考 Kieran Beckenkrager 的 [Citadel](https://github.com/kannibalk1w1/Citadel)，导入版本为 `0.4.0`，提交为 `be207e612a7e07ae78d26635e94d0e67169c8c6e`。旧实现存放在 `Code/Module/reference/citadel`，不参与当前构建；上游 MIT 许可证和第三方声明保留在 [Code/Module/LICENSE](Code/Module/LICENSE)、[Code/Module/THIRD_PARTY_NOTICES.md](Code/Module/THIRD_PARTY_NOTICES.md) 和 `Code/Module/licenses/`。
+图片内容和解码结果缓存在内存。保存先写资源，再替换 YAML；不会自动清除未引用的图片。重复保存同一状态不会产生布局差异。
+
+## 开发入口
+
+源码和依赖在 `Code/Module/`，图标等素材在 `Code/Resource/`。目录说明、环境准备、构建和测试命令见[开发说明](Code/Module/README.md)。项目自有文件、函数和变量使用 PascalCase，工具规定的名称与外部接口字段保留原样。
+
+早期实现来源于 [Citadel](https://github.com/kannibalk1w1/Citadel)，目前仅作参考。上游 [MIT 许可证](Code/Module/LICENSE)和[第三方声明](Code/Module/THIRD_PARTY_NOTICES.md)随仓库保留。

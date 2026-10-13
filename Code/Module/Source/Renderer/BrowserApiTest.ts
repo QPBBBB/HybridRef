@@ -19,7 +19,7 @@ function Request(Index = 0): { endpoint: string; headers: Record<string, string>
 }
 
 BeforeEach(() => {
-  Vi.clearAllMocks(); Stored.clear()
+  Vi.resetAllMocks(); Stored.clear()
   Vi.useFakeTimers()
   const Location = { href: 'http://127.0.0.1:47321/', search: '' }
   Vi.stubGlobal('window', {
@@ -33,7 +33,11 @@ BeforeEach(() => {
   Vi.stubGlobal('document', { visibilityState: 'visible', addEventListener: Vi.fn((Type, Callback) => { Visible = Callback }) })
   Vi.stubGlobal('fetch', FetchMock)
 })
-AfterEach(() => { Vi.unstubAllGlobals(); Vi.useRealTimers() })
+AfterEach(() => {
+  Vi.clearAllTimers()
+  Vi.unstubAllGlobals()
+  Vi.useRealTimers()
+})
 
 Describe('browser API', () => {
   It('isolates duplicated tabs while restoring the last saved path', async () => {

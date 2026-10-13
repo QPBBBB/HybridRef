@@ -1,18 +1,21 @@
 import { test as Test, expect as Expect, type Page } from '@playwright/test'
 import { spawn as Spawn, type ChildProcess } from 'node:child_process'
 import { createHash as CreateHash } from 'node:crypto'
-import { cp as Cp, mkdir as Mkdir, mkdtemp as Mkdtemp, readFile as ReadFile, stat as Stat, writeFile as WriteFile } from 'node:fs/promises'
+import { cp as Cp, mkdir as Mkdir, mkdtemp as Mkdtemp, readFile as ReadFile, rm as Rm, stat as Stat, writeFile as WriteFile } from 'node:fs/promises'
 import { basename as Basename, dirname as Dirname, join as Join, resolve as Resolve } from 'node:path'
 import { tmpdir as Tmpdir } from 'node:os'
 import Sharp from 'sharp'
 import { parse as Parse, stringify as Stringify } from 'yaml'
-import { EmptyDocument } from '../Source/Shared/Types'
+import { EmptyDocument, type BoardImage } from '../Source/Shared/Types'
+
+type ImageLayout = Pick<BoardImage, 'x' | 'y' | 'width' | 'height'>
 
 const ModuleRoot = Resolve(__dirname, '..')
 let Service: ChildProcess
 let ServiceUrl: string
 let Fixture: string
 let ProjectDirectory: string
+let Sources: string[]
 
 Test.beforeAll(async () => {
   Fixture = await Mkdtemp(Join(Tmpdir(), 'hybridref-browser-'))
@@ -32,13 +35,33 @@ Test.beforeAll(async () => {
     Document.images.push({ id: `reference-${Index + 1}`, asset: `DemoResource/${Filename}`, x: Index * 380, y: Index === 1 ? 100 : 0, width: 350, height: 350 * Height / Width })
   }
   await WriteFile(Join(DemoDirectory, 'Demo.hbr'), Stringify(Document))
+  const SourceDirectory = Join(Fixture, '参考 # 100%')
+  await Mkdir(SourceDirectory)
+  Sources = ['海.jpg', '山.webp', '光.png'].map(Name => Join(SourceDirectory, Name))
+  for (let Index = 0; Index < Sources.length; Index++) {
+    await Sharp({ create: { width: 300 + 80 * Index, height: 200 + 50 * Index, channels: 3, background: ['#497988', '#98617a', '#70956b'][Index] } }).toFile(Sources[Index])
+  }
   const Runtime = Join(Fixture, 'Server.json')
   Service = Spawn(process.execPath, [Join(ModuleRoot, 'Output/Server/Index.cjs'), '--port', '0', '--runtime', Runtime, '--project-directory', ProjectDirectory], { cwd: Fixture, stdio: 'ignore', windowsHide: true })
   await Expect.poll(async () => {
     try { ServiceUrl = JSON.parse(await ReadFile(Runtime, 'utf8')).url; return (await fetch(`${ServiceUrl}/api/health`)).ok } catch { return false }
   }).toBe(true)
 })
-Test.afterAll(() => { Service?.kill() })
+Test.afterAll(async () => {
+  if (Service && Service.exitCode === null && Service.signalCode === null) {
+    const Stopped = new Promise<void>((Done, Fail) => {
+      const Timeout = setTimeout(() => Fail(new Error('Test server did not stop; its fixture has been preserved.')), 5000)
+      Service.once('exit', () => { clearTimeout(Timeout); Done() })
+    })
+    Service.kill()
+    await Stopped
+  }
+  if (Fixture) {
+    const Root = Resolve(Fixture)
+    if (Dirname(Root) !== Resolve(Tmpdir()) || !Basename(Root).startsWith('hybridref-browser-')) throw new Error('Unsafe browser fixture cleanup path')
+    await Rm(Root, { recursive: true, force: true })
+  }
+})
 
 async function ChoosePath(Page: Page, Path: string): Promise<void> {
   await Expect(Page.getByTestId('file-dialog')).toBeVisible()
@@ -75,78 +98,107 @@ async function DropImages(Page: Page, Sources: string[]): Promise<void> {
   }, Files)
 }
 
-Test('browser editor preserves canvas interactions, clipboard events and real YAML files', async ({ page: Page }) => {
-  Test.setTimeout(60_000)
-  const Folder = Join(Fixture, '参考 # 100%')
-  await Mkdir(Folder)
-  const Project = Join(ProjectDirectory, 'BrowserRef', 'BrowserRef.hbr')
-  const Sources = [Join(Folder, '海.jpg'), Join(Folder, '山.webp'), Join(Folder, '光.png')]
-  for (let I = 0; I < Sources.length; I++) await Sharp({ create: { width: 300 + 80 * I, height: 200 + 50 * I, channels: 3, background: ['#497988', '#98617a', '#70956b'][I] } }).toFile(Sources[I])
-  const Errors: string[] = []
-  Page.on('pageerror', CaughtError => Errors.push(CaughtError.message))
+async function OpenImportedBoard(Page: Page): Promise<void> {
   await Page.goto(ServiceUrl)
   await Expect(Page.getByTestId('canvas')).toBeVisible()
   await Expect(Page.getByTestId('open')).toBeEnabled()
-  await Expect(Page.getByTestId('import')).toHaveCount(0)
-  await Expect(Page.getByTestId('file-input')).toHaveCount(0)
-  await Expect(Page.getByTestId('undo')).toHaveCount(0)
-  await Expect(Page.getByTestId('redo')).toHaveCount(0)
-  await Expect(Page.getByTestId('align-menu')).toHaveCount(0)
   await DropImages(Page, Sources)
   const Images = Page.getByTestId('image-item')
   await Expect(Images).toHaveCount(3)
   await Expect.poll(() => Images.evaluateAll(Nodes => Nodes.every(Node => (Node as HTMLImageElement).complete && (Node as HTMLImageElement).naturalWidth > 0))).toBe(true)
+}
+
+async function ReadImageLayout(Page: Page): Promise<ImageLayout[]> {
+  return Page.getByTestId('image-item').evaluateAll(Nodes => Nodes.map(Node => ({
+    x: Number(Node.getAttribute('data-x')), y: Number(Node.getAttribute('data-y')),
+    width: Number(Node.getAttribute('data-width')), height: Number(Node.getAttribute('data-height')),
+  })))
+}
+
+async function CheckShortcutHistory(Page: Page, Shortcut: string, Before: ImageLayout[], After: ImageLayout[]): Promise<void> {
+  // An already-applied operation must neither move images nor add an undo step.
+  await Page.keyboard.press(Shortcut)
+  Expect(await ReadImageLayout(Page)).toEqual(After)
+  await Page.keyboard.press('Control+z')
+  Expect(await ReadImageLayout(Page)).toEqual(Before)
+  await Page.keyboard.press('Control+Shift+z')
+  Expect(await ReadImageLayout(Page)).toEqual(After)
+  await Page.keyboard.press('Control+z')
+  Expect(await ReadImageLayout(Page)).toEqual(Before)
+}
+
+function ExpectDirectionalPush(Before: ImageLayout[], Packed: ImageLayout[], Axis: 'x' | 'y', Factor: 0 | 1): void {
+  const Dimension = Axis === 'x' ? 'width' : 'height'
+  const OtherAxis = Axis === 'x' ? 'y' : 'x'
+  const OtherDimension = Axis === 'x' ? 'height' : 'width'
+  const Edges = Before.map(Image => Image[Axis] + Factor * Image[Dimension])
+  const Edge = Factor === 0 ? Math.min(...Edges) : Math.max(...Edges)
+  Packed.forEach((Image, Index) => {
+    Expect(Image[OtherAxis]).toBe(Before[Index][OtherAxis])
+    Expect([Image.width, Image.height]).toEqual([Before[Index].width, Before[Index].height])
+    const LeadingEdge = Image[Axis] + Factor * Image[Dimension]
+    const TouchesBoundary = Math.abs(LeadingEdge - Edge) < 1e-6
+    const TouchesImage = Packed.some((Other, OtherIndex) => OtherIndex !== Index
+      && Image[OtherAxis] < Other[OtherAxis] + Other[OtherDimension]
+      && Image[OtherAxis] + Image[OtherDimension] > Other[OtherAxis]
+      && Math.abs(LeadingEdge - (Other[Axis] + (1 - Factor) * Other[Dimension])) < 1e-6)
+    Expect(TouchesBoundary || TouchesImage).toBe(true)
+    for (const Other of Packed.slice(Index + 1)) {
+      const OverlapX = Math.min(Image.x + Image.width, Other.x + Other.width) - Math.max(Image.x, Other.x)
+      const OverlapY = Math.min(Image.y + Image.height, Other.y + Other.height) - Math.max(Image.y, Other.y)
+      Expect(OverlapX > 1e-6 && OverlapY > 1e-6).toBe(false)
+    }
+  })
+}
+
+Test('canvas supports dragging, proportional resize, zoom, pan and snapping', async ({ page: Page }) => {
+  const Errors: string[] = []
+  Page.on('pageerror', CaughtError => Errors.push(CaughtError.message))
+  await OpenImportedBoard(Page)
+  for (const Id of ['import', 'file-input', 'undo', 'redo', 'align-menu']) await Expect(Page.getByTestId(Id)).toHaveCount(0)
+  const Images = Page.getByTestId('image-item')
   await Page.keyboard.press('Control+a')
   await Expect(Page.getByTestId('status')).toContainText('已选 3')
-  const OldX = Number(await Images.first().getAttribute('data-x'))
+  const BeforeDrag = await ReadImageLayout(Page)
   const First = (await Images.first().boundingBox())!
   await Page.mouse.move(First.x + First.width / 2, First.y + First.height / 2)
   await Page.mouse.down()
   await Page.mouse.move(First.x + First.width / 2 + 75, First.y + First.height / 2 + 35, { steps: 8 })
   await Page.mouse.up()
-  Expect(Number(await Images.first().getAttribute('data-x'))).not.toBe(OldX)
-  const BeforeAlignment = await Images.evaluateAll(Nodes => Nodes.map(Node => ({
-    x: Number(Node.getAttribute('data-x')), y: Number(Node.getAttribute('data-y')),
-    width: Number(Node.getAttribute('data-width')), height: Number(Node.getAttribute('data-height')),
-  })))
-  for (const [Key, Axis, Factor] of [['l', 'x', 0], ['h', 'x', 0.5], ['r', 'x', 1], ['t', 'y', 0], ['v', 'y', 0.5], ['b', 'y', 1]] as const) {
-    await Page.keyboard.press(Key)
-    const Positions = await Images.evaluateAll((Nodes, Options) => Nodes.map(Node => Number(Node.getAttribute(`data-${Options.Axis}`)) + Options.Factor * Number(Node.getAttribute(Options.Axis === 'x' ? 'data-width' : 'data-height'))), { Axis, Factor })
-    for (const Position of Positions) Expect(Position).toBeCloseTo(Positions[0], 6)
-    await Page.keyboard.press('Control+z')
-    Expect(await Images.evaluateAll(Nodes => Nodes.map(Node => ({
-      x: Number(Node.getAttribute('data-x')), y: Number(Node.getAttribute('data-y')),
-      width: Number(Node.getAttribute('data-width')), height: Number(Node.getAttribute('data-height')),
-    })))).toEqual(BeforeAlignment)
-  }
-  await Page.keyboard.press('t')
-  Expect(new Set(await Images.evaluateAll(Nodes => Nodes.map(Node => Node.getAttribute('data-y')))).size).toBe(1)
+  Expect((await ReadImageLayout(Page))[0].x).not.toBe(BeforeDrag[0].x)
+  await Page.keyboard.press('Control+ArrowLeft')
+  await Page.getByTestId('fit').click()
 
-  const Dimensions = await Images.evaluateAll(Nodes => Nodes.map(Node => [Number(Node.getAttribute('data-width')), Number(Node.getAttribute('data-height'))]))
+  const BeforeResize = await ReadImageLayout(Page)
   const Handle = (await Page.getByTestId('resize-se').boundingBox())!
   await Page.mouse.move(Handle.x + 4, Handle.y + 4)
   await Page.mouse.down()
   await Page.mouse.move(Handle.x + 120, Handle.y + 60, { steps: 8 })
   await Page.mouse.up()
-  const Resized = await Images.evaluateAll(Nodes => Nodes.map(Node => [Number(Node.getAttribute('data-width')), Number(Node.getAttribute('data-height'))]))
-  Expect(Resized[0][0]).toBeGreaterThan(Dimensions[0][0])
-  Resized.forEach((Size, I) => Expect(Size[0] / Size[1]).toBeCloseTo(Dimensions[I][0] / Dimensions[I][1], 3))
+  const Resized = await ReadImageLayout(Page)
+  Expect(Resized[0].width).toBeGreaterThan(BeforeResize[0].width)
+  Resized.forEach((Image, Index) => Expect(Image.width / Image.height).toBeCloseTo(BeforeResize[Index].width / BeforeResize[Index].height, 3))
   await Page.keyboard.press('Control+z')
-  await Expect(Images.first()).toHaveAttribute('data-width', String(Dimensions[0][0]))
+  Expect(await ReadImageLayout(Page)).toEqual(BeforeResize)
   await Page.keyboard.press('Control+Shift+z')
+  Expect(await ReadImageLayout(Page)).toEqual(Resized)
+
   await Page.getByTestId('fit').click()
   const PreviousZoom = await Page.getByTestId('zoom').textContent()
   await Page.mouse.move(650, 440)
   await Page.mouse.wheel(0, -150)
   await Expect(Page.getByTestId('zoom')).not.toHaveText(PreviousZoom!)
-  const BeforePan = await Images.first().getAttribute('data-x')
+  const BeforePan = await ReadImageLayout(Page)
+  const BeforePanBox = (await Images.first().boundingBox())!
   await Page.keyboard.down('Space')
   await Page.mouse.move(950, 730)
   await Page.mouse.down()
   await Page.mouse.move(750, 560, { steps: 8 })
   await Page.mouse.up()
   await Page.keyboard.up('Space')
-  await Expect(Images.first()).toHaveAttribute('data-x', BeforePan!)
+  Expect(await ReadImageLayout(Page)).toEqual(BeforePan)
+  Expect((await Images.first().boundingBox())!.x).not.toBe(BeforePanBox.x)
+
   await Page.getByTestId('fit').click()
   await Page.keyboard.press('Escape')
   await Images.nth(2).click()
@@ -157,9 +209,62 @@ Test('browser editor preserves canvas interactions, clipboard events and real YA
   await Page.mouse.move(Second.x + Second.width + Third.width / 2 + 3, Third.y + Third.height / 2 + 20, { steps: 8 })
   await Expect(Page.getByTestId('snap-guide').first()).toBeVisible()
   await Page.mouse.up()
-  Expect(Number(await Images.nth(2).getAttribute('data-x'))).toBeCloseTo(Number(await Images.nth(1).getAttribute('data-x')) + Number(await Images.nth(1).getAttribute('data-width')), 2)
+  const Snapped = await ReadImageLayout(Page)
+  Expect(Snapped[2].x).toBeCloseTo(Snapped[1].x + Snapped[1].width, 2)
+  Expect(Errors).toEqual([])
+})
 
-  // Exercise the native browser ClipboardEvent paths without replacing the user's OS clipboard.
+Test('geometry shortcuts preserve selection and support exact repeat, undo and redo', async ({ page: Page }) => {
+  await OpenImportedBoard(Page)
+  await Page.keyboard.press('Control+a')
+  const Before = await ReadImageLayout(Page)
+  await Page.keyboard.press('l')
+  Expect(await ReadImageLayout(Page)).toEqual(Before)
+
+  for (const [Key, Axis, Dimension] of [['h', 'x', 'width'], ['v', 'y', 'height']] as const) {
+    await Test.step(`${Key}: centre selected images`, async () => {
+      await Page.keyboard.press(Key)
+      const Centers = (await ReadImageLayout(Page)).map(Image => Image[Axis] + Image[Dimension] / 2)
+      Centers.forEach(Center => Expect(Center).toBeCloseTo(Centers[0], 6))
+      await Page.keyboard.press('Control+z')
+      Expect(await ReadImageLayout(Page)).toEqual(Before)
+    })
+  }
+  for (const [Key, Axis, Factor] of [['ArrowLeft', 'x', 0], ['ArrowRight', 'x', 1], ['ArrowUp', 'y', 0], ['ArrowDown', 'y', 1]] as const) {
+    await Test.step(`Control+${Key}: push until touching`, async () => {
+      const Shortcut = `Control+${Key}`
+      await Page.keyboard.press(Shortcut)
+      const Packed = await ReadImageLayout(Page)
+      ExpectDirectionalPush(Before, Packed, Axis, Factor)
+      await Expect(Page.getByTestId('status')).toContainText('已选 3')
+      await CheckShortcutHistory(Page, Shortcut, Before, Packed)
+    })
+  }
+  for (const [Key, Dimension] of [['ArrowRight', 'width'], ['ArrowLeft', 'height']] as const) {
+    await Test.step(`Control+Alt+${Key}: normalize ${Dimension}`, async () => {
+      const Shortcut = `Control+Alt+${Key}`
+      const Average = Before.reduce((Total, Image) => Total + Image[Dimension], 0) / Before.length
+      await Page.keyboard.press(Shortcut)
+      const Normalized = await ReadImageLayout(Page)
+      Normalized.forEach((Image, Index) => {
+        const Original = Before[Index]
+        Expect(Image[Dimension]).toBeCloseTo(Average, 6)
+        Expect(Image.width / Image.height).toBeCloseTo(Original.width / Original.height, 6)
+        Expect(Image.x + Image.width / 2).toBeCloseTo(Original.x + Original.width / 2, 6)
+        Expect(Image.y + Image.height / 2).toBeCloseTo(Original.y + Original.height / 2, 6)
+      })
+      await Expect(Page.getByTestId('status')).toContainText('已选 3')
+      await CheckShortcutHistory(Page, Shortcut, Before, Normalized)
+    })
+  }
+})
+
+Test('clipboard images save as deterministic YAML and PNG, then reopen after switching and reload', async ({ page: Page }) => {
+  await OpenImportedBoard(Page)
+  const Images = Page.getByTestId('image-item')
+  await Page.keyboard.press('Escape')
+  await Images.nth(2).click()
+  // Use browser ClipboardEvent paths without replacing the user's OS clipboard.
   await Page.evaluate(() => {
     const Data = new DataTransfer()
     document.dispatchEvent(new ClipboardEvent('copy', { clipboardData: Data, bubbles: true, cancelable: true }))
@@ -180,12 +285,13 @@ Test('browser editor preserves canvas interactions, clipboard events and real YA
   await Page.keyboard.press('Control+s')
   await ChooseProjectName(Page, 'BrowserRef')
   await Expect(Page).toHaveTitle('BrowserRef.hbr — HybridRef')
+  const Project = Join(ProjectDirectory, 'BrowserRef', 'BrowserRef.hbr')
   const Saved = await ReadFile(Project, 'utf8')
   const Doc = Parse(Saved)
   Expect(Doc.images).toHaveLength(5)
-  for (const Item of Doc.images) {
-    Expect(Item.asset).toMatch(/^BrowserRefResource\/\d{13}_[A-F0-9]{8}\.png$/)
-    Expect((await ReadFile(Join(Dirname(Project), Item.asset))).subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a')
+  for (const Image of Doc.images) {
+    Expect(Image.asset).toMatch(/^BrowserRefResource\/\d{13}_[A-F0-9]{8}\.png$/)
+    Expect((await ReadFile(Join(Dirname(Project), Image.asset))).subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a')
   }
   const BeforeSave = (await Stat(Project)).mtimeMs
   await Page.keyboard.press('Control+s')
@@ -198,9 +304,7 @@ Test('browser editor preserves canvas interactions, clipboard events and real YA
   await Expect(Images).toHaveCount(5)
   await Page.reload()
   await Expect(Images).toHaveCount(5)
-  Expect(Errors).toEqual([])
 })
-
 Test('project dropdown opens the existing demo and supports marquee/Shift selection', async ({ page: Page }) => {
   await Page.goto(ServiceUrl)
   await OpenProject(Page, 'Demo')
@@ -208,8 +312,6 @@ Test('project dropdown opens the existing demo and supports marquee/Shift select
   const Images = Page.getByTestId('image-item')
   await Expect(Images).toHaveCount(3)
   await Expect(Page.getByTestId('file-dialog')).toHaveCount(0)
-  await Mkdir(Resolve(ModuleRoot, 'Runtime/Logs'), { recursive: true })
-  await Page.screenshot({ path: Resolve(ModuleRoot, 'Runtime/Logs/BrowserPreview.png') })
   const Boxes = await Promise.all([0, 1, 2].map(Index => Images.nth(Index).boundingBox()))
   await Page.mouse.move(Math.min(...Boxes.map(Box => Box!.x)) - 10, Math.min(...Boxes.map(Box => Box!.y)) - 10)
   await Page.mouse.down()
@@ -307,11 +409,8 @@ Test('project menu refreshes on open, supports keyboard control and asks about e
   await Expect(Page.getByTestId('project-menu')).toHaveCount(0)
   await Page.getByTestId('open').click()
   await Expect(Page.getByTestId('project-entry').filter({ hasText: 'FreshlyAdded' })).toBeVisible()
-  await Mkdir(Resolve(ModuleRoot, 'Runtime/Logs'), { recursive: true })
-  await Page.screenshot({ path: Resolve(ModuleRoot, 'Runtime/Logs/ProjectMenuPreview.png') })
   await Page.getByTestId('new').click()
   await Page.getByTestId('file-name').fill('MyReference')
-  await Page.screenshot({ path: Resolve(ModuleRoot, 'Runtime/Logs/NewProjectPreview.png') })
   await Page.getByTestId('file-cancel').click()
 
   await Page.keyboard.press('Control+a')

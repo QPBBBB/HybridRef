@@ -1,26 +1,30 @@
 import React, { useEffect as UseEffect, useRef as UseRef, useState as UseState } from 'react'
 import { EmptyDocument, type BoardDocument, type BoardImage, type ImageAsset, type ImportResult, type LoadedBoard, type ProjectEntry, type Viewport } from '../Shared/Types'
-import { AlignImages, BoundingBox, FitViewport, Intersects, RectFromPoints, ResizeGroup, ScreenToWorld, SnapMove, ZoomAt, type Point } from './Geometry'
+import {
+  BoundingBox, CenterImages, FitViewport, Intersects, NormalizeImages, PushImages,
+  RectFromPoints, ResizeGroup, ScreenToWorld, SnapMove, ZoomAt,
+  type CenterMode, type NormalizeMode, type Point, type PushDirection, type ResizeCorner, type SnapGuide,
+} from './Geometry'
 import { ClearImageCache, DecodeAssets } from './ImageCache'
 import { IsFileDialogOpen } from './FileDialog'
 
-type Corner = 'nw' | 'ne' | 'sw' | 'se'
-type Alignment = 'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom'
-type Guide = { axis: 'x' | 'y'; position: number }
 type Gesture = {
   kind: 'pan' | 'marquee' | 'move' | 'resize'
   start: Point
   viewport: Viewport
   before: BoardImage[]
   selected: string[]
-  corner?: Corner
+  corner?: ResizeCorner
   additive?: boolean
 }
 
 const Fingerprint = (Images: readonly BoardImage[]): string => JSON.stringify(Images)
 const Uuid = (): string => crypto.randomUUID()
 const ClipboardType = 'application/x-hybridref-items'
-const AlignmentShortcuts: Record<string, Alignment> = { l: 'left', h: 'centerX', r: 'right', t: 'top', v: 'centerY', b: 'bottom' }
+const PushShortcuts: Partial<Record<string, PushDirection>> = { r: 'right', t: 'top', b: 'bottom' }
+const DirectionalPushShortcuts: Partial<Record<string, PushDirection>> = { arrowleft: 'left', arrowright: 'right', arrowup: 'top', arrowdown: 'bottom' }
+const CenterShortcuts: Partial<Record<string, CenterMode>> = { h: 'horizontal', v: 'vertical' }
+const NormalizeShortcuts: Partial<Record<string, NormalizeMode>> = { arrowright: 'width', arrowleft: 'height' }
 
 export default function App(): React.ReactElement {
   const [Document, SetDocument] = UseState<BoardDocument>(EmptyDocument)
@@ -40,7 +44,7 @@ export default function App(): React.ReactElement {
   const Canvas = UseRef<HTMLDivElement>(null)
   const Gesture = UseRef<Gesture | null>(null)
   const [Marquee, SetMarquee] = UseState<ReturnType<typeof RectFromPoints> | null>(null)
-  const [Guides, SetGuides] = UseState<Guide[]>([])
+  const [Guides, SetGuides] = UseState<SnapGuide[]>([])
   const [SpaceHeld, SetSpaceHeld] = UseState(false)
   const Space = UseRef(false)
   const [Message, SetMessage] = UseState('')
@@ -275,15 +279,31 @@ export default function App(): React.ReactElement {
     const Size = ViewportSize()
     Publish({ ...Current.current, viewport: ZoomAt(Current.current.viewport, { x: Size.width / 2, y: Size.height / 2 }, Next) })
   }
-  function Align(Mode: Alignment): void {
-    Images(AlignImages(Current.current.images, Selection.current, Mode))
+  function TransformSelection(InputEvent: KeyboardEvent): boolean {
+    if (InputEvent.metaKey || InputEvent.shiftKey || InputEvent.isComposing || InputEvent.repeat
+      || WorkingRef.current || Gesture.current || Space.current || Selection.current.length < 2) return false
+    const Key = InputEvent.key.toLowerCase()
+    let Next: BoardImage[] | undefined
+    if (InputEvent.ctrlKey && InputEvent.altKey) {
+      const Mode = NormalizeShortcuts[Key]
+      if (Mode) Next = NormalizeImages(Current.current.images, Selection.current, Mode)
+    } else if (!InputEvent.altKey) {
+      const Direction = (InputEvent.ctrlKey ? DirectionalPushShortcuts : PushShortcuts)[Key]
+      const CenterMode = !InputEvent.ctrlKey ? CenterShortcuts[Key] : undefined
+      if (Direction) Next = PushImages(Current.current.images, Selection.current, Direction)
+      else if (CenterMode) Next = CenterImages(Current.current.images, Selection.current, CenterMode)
+    }
+    if (!Next) return false
+    InputEvent.preventDefault()
+    Images(Next)
+    return true
   }
 
   function LocalPoint(ClientX: number, ClientY: number): Point {
     const Rect = Canvas.current!.getBoundingClientRect()
     return { x: ClientX - Rect.left, y: ClientY - Rect.top }
   }
-  function Begin(InputEvent: React.PointerEvent, ImageId?: string, Corner?: Corner): void {
+  function Begin(InputEvent: React.PointerEvent, ImageId?: string, Corner?: ResizeCorner): void {
     if (InputEvent.button !== 0 && InputEvent.button !== 1) return
     InputEvent.preventDefault()
     InputEvent.stopPropagation()
@@ -401,11 +421,7 @@ export default function App(): React.ReactElement {
       }
       if (InputEvent.code === 'Space') { InputEvent.preventDefault(); Space.current = true; SetSpaceHeld(true); return }
       if (Key === 'escape') { Finish(undefined, true); Select([]); return }
-      if (!Modifier && !InputEvent.altKey && !InputEvent.shiftKey && !InputEvent.isComposing && !InputEvent.repeat
-        && !WorkingRef.current && !Gesture.current && !Space.current && Selection.current.length >= 2) {
-        const AlignmentMode = AlignmentShortcuts[Key]
-        if (AlignmentMode) { InputEvent.preventDefault(); Align(AlignmentMode); return }
-      }
+      if (TransformSelection(InputEvent)) return
       const Action = Modifier ? ({
         a: () => Select(Current.current.images.map((Item) => Item.id)),
         d: () => InsertCopies(Current.current.images.filter((Item) => Selection.current.includes(Item.id)), 24),
@@ -448,7 +464,7 @@ export default function App(): React.ReactElement {
           </div>
         </div>}
       </div>
-      <button data-testid="save" disabled={Working > PendingSaves.current} title="保存 · Ctrl+S / 另存为 · Ctrl+Shift+S" onClick={() => void SaveBoard()}>保存{Dirty ? ' ·' : ''}</button>
+      <button data-testid="save" className="save-button" aria-label={Dirty ? '保存（有未保存的修改）' : '保存'} disabled={Working > PendingSaves.current} title="保存 · Ctrl+S / 另存为 · Ctrl+Shift+S" onClick={() => void SaveBoard()}>保存{Dirty && <span className="save-dirty" aria-hidden="true">*</span>}</button>
       <span className="filename" title={Path || undefined}>{Path?.split(/[\\/]/).pop() || '未命名画板'}</span>
       {Working > 0 && <span className="working" role="status">处理中…</span>}
     </header>
@@ -462,7 +478,7 @@ export default function App(): React.ReactElement {
       </div>
       {!Document.images.length && <div className="empty"><span>拖入图片，开始整理参考</span><small>或使用 Ctrl+V 粘贴截图</small></div>}
       {Bounds && <div data-testid="selection-box" className="selection-box" style={SelectionStyle}>
-        {(['nw', 'ne', 'sw', 'se'] as Corner[]).map((Corner) => <button key={Corner} data-testid={`resize-${Corner}`} className={`resize-handle ${Corner}`} aria-label={`等比缩放 ${Corner}`} onPointerDown={(InputEvent) => Begin(InputEvent, undefined, Corner)} />)}
+        {(['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((Corner) => <button key={Corner} data-testid={`resize-${Corner}`} className={`resize-handle ${Corner}`} aria-label={`等比缩放 ${Corner}`} onPointerDown={(InputEvent) => Begin(InputEvent, undefined, Corner)} />)}
       </div>}
       {Marquee && <div data-testid="marquee" className="marquee" style={{ left: Marquee.x, top: Marquee.y, width: Marquee.width, height: Marquee.height }} />}
       {Guides.map((Guide, Index) => <div key={Index} data-testid="snap-guide" className={`snap-guide ${Guide.axis}`} style={Guide.axis === 'x' ? { left: View.x + Guide.position * View.zoom } : { top: View.y + Guide.position * View.zoom }} />)}

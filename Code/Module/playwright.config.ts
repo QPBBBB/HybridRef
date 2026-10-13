@@ -1,9 +1,6 @@
 import { defineConfig as DefineConfig } from '@playwright/test'
 
-/**
- * Exercise the application in real Microsoft Edge, with isolated browser
- * contexts and temporary project files. No Electron runtime is used.
- */
+// Each test uses an isolated Edge context and temporary project files.
 export default DefineConfig({
   testDir: './E2E',
   testMatch: '**/*E2E.ts',
@@ -12,7 +9,10 @@ export default DefineConfig({
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
   workers: 1,
-  use: { browserName: 'chromium', channel: 'msedge', viewport: { width: 1360, height: 900 } },
-  reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : [['list'], ['html', { open: 'never' }]],
-  outputDir: 'test-results',
+  use: {
+    browserName: 'chromium', channel: 'msedge', viewport: { width: 1360, height: 900 },
+    screenshot: 'only-on-failure', trace: 'retain-on-failure',
+  },
+  reporter: [[process.env.CI ? 'github' : 'list'], ['html', { open: 'never', outputFolder: 'Runtime/PlaywrightReport' }]],
+  outputDir: 'Runtime/TestResults',
 })
