@@ -1,5 +1,10 @@
 allowBuilds:
-  electron: true
   esbuild: true
   sharp: true
-  core-js: false
+nodeLinker: hoisted
+packageImportMethod: copy
+extendNodePath: false
+verifyDepsBeforeRun: false
+pmOnFail: ignore
+updateNotifier: false
+confirmModulesPurge: false

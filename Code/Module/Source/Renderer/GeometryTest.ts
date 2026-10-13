@@ -1,8 +1,8 @@
 import { describe as Describe, expect as Expect, it as It } from 'vitest'
-import type { BoardImage, Viewport } from '../Shared/Types'
+import { EmptyTextResource, type BoardImage, type BoardText, type Viewport } from '../Shared/Types'
 import {
   BoundingBox, CenterImages, FitViewport, Intersects, MaxZoom, MinZoom, NormalizeImages,
-  PushImages, RectFromPoints, ResizeGroup, ScreenToWorld, SnapMove, WorldToScreen, ZoomAt,
+  PushImages, RectFromPoints, ResizeGroup, ResizeTextFrame, ScreenToWorld, SnapMove, WorldToScreen, ZoomAt,
   type CenterMode, type NormalizeMode, type PushDirection, type ResizeCorner,
 } from './Geometry'
 
@@ -278,5 +278,25 @@ Describe('proportional group resize', () => {
     Expect(Result[1].x / Result[0].width).toBeCloseTo(Original[1].x / Original[0].width)
     Expect(Result[0].x).toBe(0)
     Expect(Result[0].y).toBe(0)
+  })
+})
+
+Describe('text frames', () => {
+  const Original: BoardText = { id: 'text', x: 10, y: 20, width: 100, height: 60, text: EmptyTextResource('文字') }
+  It('changes frame proportions without changing text style and keeps the opposite corner fixed', () => {
+    const Result = ResizeTextFrame(Original, 'nw', { x: -40, y: 10 })
+    Expect(Result).toMatchObject({ x: -40, y: 10, width: 150, height: 70 })
+    Expect(Result.text).toBe(Original.text)
+    const Crossed = ResizeTextFrame(Original, 'se', { x: -100, y: -100 })
+    Expect(Crossed).toMatchObject({ x: 10, y: 20, width: 24, height: 24 })
+  })
+  It('retains font style while resizing and arranging a mixed image/text selection', () => {
+    const Items: (BoardImage | BoardText)[] = [ImageValue('image', -110, 20, 100, 60), Original]
+    const Resized = ResizeGroup(Items, 'se', { x: 330, y: 140 })
+    Expect(Resized[1].width).toBe(200)
+    Expect('text' in Resized[1] && Resized[1].text).toBe(Original.text)
+    const Pushed = PushImages(Items, ['image', 'text'], 'left')
+    Expect(Pushed[1].x).toBe(-10)
+    Expect('text' in Pushed[1] && Pushed[1].text).toBe(Original.text)
   })
 })

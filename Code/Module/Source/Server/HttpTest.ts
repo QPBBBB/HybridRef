@@ -6,7 +6,7 @@ import { join as Join, resolve as Resolve } from 'node:path'
 import Sharp from 'sharp'
 import { afterEach as AfterEach, describe as Describe, expect as Expect, it as It, vi as Vi } from 'vitest'
 import { parse as Parse } from 'yaml'
-import { EmptyDocument, type BoardDocument } from '../Shared/Types'
+import { EmptyDocument, EmptyTextResource, type BoardDocument } from '../Shared/Types'
 import { CreateAppServer } from './Http'
 import { ImageStore } from './Storage'
 
@@ -73,6 +73,30 @@ function ImageBoard(Id: string): BoardDocument {
 }
 
 Describe('local browser HTTP server', () => {
+  It('creates, saves and opens text through the existing document APIs using separate resource files', async () => {
+    const { call: Call, projectDirectory: ProjectDirectory } = await App()
+    const Document: BoardDocument = { ...EmptyDocument(), texts: [{ id: 'note-1', x: 20, y: 30, width: 320, height: 180, text: EmptyTextResource('中文\nHTTP 文本') }] }
+    const Path = Join(ProjectDirectory, 'TextProject', 'TextProject.hbr')
+    Expect((await Call('/api/new', { name: 'TextProject', document: Document })).status).toBe(200)
+    const Stored = Parse(ReadFileSync(Path, 'utf8'))
+    Expect(Stored.texts[0]).not.toHaveProperty('text')
+    Expect(Stored.texts[0].asset).toMatch(/^TextProjectResource\/Text_note-1_[a-f0-9]{16}\.yaml$/)
+    Expect(Parse(ReadFileSync(Join(ProjectDirectory, 'TextProject', Stored.texts[0].asset), 'utf8'))).toEqual(Document.texts[0].text)
+    const OtherTab = RandomUUID()
+    const Opened = await Call('/api/open', { path: Path }, { session: OtherTab })
+    Expect(Opened.status).toBe(200)
+    Expect(Opened.body.document).toEqual(Document)
+    Expect(Opened.body.assets).toEqual([])
+    Document.texts[0].text.content = '保存修改'
+    Document.texts[0].text.background.opacity = 0.25
+    Expect((await Call('/api/save', { path: Path, document: Document }, { session: OtherTab })).status).toBe(200)
+    Expect((await Call('/api/open', { path: Path })).body.document).toEqual(Document)
+    Document.texts[0].text.font.opacity = 2
+    const Invalid = await Call('/api/save', { path: Path, document: Document })
+    Expect(Invalid.status).toBe(400)
+    Expect(Invalid.body.error).toContain('透明度')
+  })
+
   It('serves health, static HTML/HEAD and same-origin JSON without exposing project files statically', async () => {
     const { call: Call, port: Port, projectDirectory: ProjectDirectory } = await App()
     const Health = await Call('/api/health')

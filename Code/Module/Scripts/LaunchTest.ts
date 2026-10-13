@@ -22,7 +22,7 @@ function Fixture() {
     UtimesSync(Target, Timestamp, Timestamp)
     return Target
   }
-  for (const FileValue of ['Source/Server/Index.ts', '../Resource/icon.png', 'package.json', 'vite.config.ts', 'Scripts/Build.cjs']) Write(FileValue)
+  for (const FileValue of ['Source/Server/Index.ts', '../Resource/icon.png', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'vite.config.ts', 'Scripts/Build.cjs']) Write(FileValue)
   for (const FileValue of Outputs) Write(FileValue, '', 20)
   for (const Directory of ['Source/Server', 'Source', '../Resource']) UtimesSync(Path.join(ModuleRoot, Directory), 10, 10)
   const RuntimeFile = Path.join(ModuleRoot, 'Runtime/Server.json')
@@ -55,6 +55,12 @@ Describe('browser launcher build readiness', () => {
     const { moduleRoot: ModuleRoot } = Fixture()
     RmSync(Path.join(ModuleRoot, Outputs[0]))
     Expect(() => EnsureBuild(ModuleRoot, false, () => ({ status: 0 }))).toThrow('did not produce')
+  })
+
+  It.each(['pnpm-lock.yaml', 'pnpm-workspace.yaml'])('rebuilds when dependency definition %s changes', (Filename) => {
+    const { moduleRoot: ModuleRoot, write: Write } = Fixture()
+    Write(Filename, '', 30)
+    Expect(BuildState(ModuleRoot).stale).toBe(true)
   })
 
   It('--check builds only, without starting a server, probing a port or opening a browser', async () => {

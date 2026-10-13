@@ -1,0 +1,9 @@
+{
+  "Platform": "win32-x64",
+  "NodeVersion": "24.19.0",
+  "NodeSha256": "3602F2BB1A10F2CBAB4C36886218A33C1AB3DB87290E73B033C46C77147D0237",
+  "NodeSource": "https://nodejs.org/dist/v24.19.0/win-x64/node.exe",
+  "NodeChecksums": "https://nodejs.org/dist/v24.19.0/SHASUMS256.txt",
+  "PnpmVersion": "11.25.0",
+  "PnpmSource": "https://registry.npmjs.org/pnpm/-/pnpm-11.25.0.tgz"
+}

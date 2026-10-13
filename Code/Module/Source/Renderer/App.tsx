@@ -1,24 +1,28 @@
 import React, { useEffect as UseEffect, useRef as UseRef, useState as UseState } from 'react'
-import { EmptyDocument, type BoardDocument, type BoardImage, type ImageAsset, type ImportResult, type LoadedBoard, type ProjectEntry, type Viewport } from '../Shared/Types'
+import { EmptyDocument, EmptyTextResource, type BoardDocument, type BoardImage, type BoardText, type TextResource, type ImageAsset, type ImportResult, type LoadedBoard, type ProjectEntry, type Viewport } from '../Shared/Types'
 import {
   BoundingBox, CenterImages, FitViewport, Intersects, NormalizeImages, PushImages,
-  RectFromPoints, ResizeGroup, ScreenToWorld, SnapMove, ZoomAt,
+  RectFromPoints, ResizeGroup, ResizeTextFrame, ScreenToWorld, SnapMove, ZoomAt,
   type CenterMode, type NormalizeMode, type Point, type PushDirection, type ResizeCorner, type SnapGuide,
 } from './Geometry'
 import { ClearImageCache, DecodeAssets } from './ImageCache'
 import { IsFileDialogOpen } from './FileDialog'
+import { TextEditor, TextColor } from './TextEditor'
+
+type BoardItem = BoardImage | BoardText
+const BoardItems = (Document: BoardDocument): BoardItem[] => [...Document.images, ...Document.texts]
 
 type Gesture = {
   kind: 'pan' | 'marquee' | 'move' | 'resize'
   start: Point
   viewport: Viewport
-  before: BoardImage[]
+  before: BoardItem[]
   selected: string[]
   corner?: ResizeCorner
   additive?: boolean
 }
 
-const Fingerprint = (Images: readonly BoardImage[]): string => JSON.stringify(Images)
+const Fingerprint = (Images: readonly BoardItem[]): string => JSON.stringify(Images)
 const Uuid = (): string => crypto.randomUUID()
 const ClipboardType = 'application/x-hybridref-items'
 const PushShortcuts: Partial<Record<string, PushDirection>> = { r: 'right', t: 'top', b: 'bottom' }
@@ -35,12 +39,12 @@ export default function App(): React.ReactElement {
   const Selection = UseRef<string[]>([])
   const [Path, SetPath] = UseState<string | null>(null)
   const CurrentPath = UseRef<string | null>(null)
-  const SavedImages = UseRef(Fingerprint([]))
+  const SavedItems = UseRef(Fingerprint([]))
   const [Dirty, SetDirty] = UseState(false)
   const DirtyRef = UseRef(false)
   const [HistoryVersion, SetHistoryVersion] = UseState(0)
-  const Past = UseRef<BoardImage[][]>([])
-  const Future = UseRef<BoardImage[][]>([])
+  const Past = UseRef<BoardItem[][]>([])
+  const Future = UseRef<BoardItem[][]>([])
   const Canvas = UseRef<HTMLDivElement>(null)
   const Gesture = UseRef<Gesture | null>(null)
   const [Marquee, SetMarquee] = UseState<ReturnType<typeof RectFromPoints> | null>(null)
@@ -61,17 +65,19 @@ export default function App(): React.ReactElement {
   const OpenButton = UseRef<HTMLButtonElement>(null)
   const Session = UseRef(0)
   const StartupAllowed = UseRef(true)
-  const InternalClipboard = UseRef<BoardImage[]>([])
+  const InternalClipboard = UseRef<BoardItem[]>([])
   const ClipboardToken = UseRef('')
   const PasteOffset = UseRef(0)
   const SaveQueue = UseRef<Promise<unknown>>(Promise.resolve())
+  const [EditingId, SetEditingId] = UseState<string | null>(null)
+  const DraftDirty = UseRef(false)
 
   function StartWork(): void { WorkingRef.current += 1; SetWorking(WorkingRef.current) }
   function EndWork(): void { WorkingRef.current -= 1; SetWorking(WorkingRef.current) }
 
   function Select(Ids: string[]): void { Selection.current = Ids; SetSelected(Ids) }
   function RefreshDirty(): void {
-    const Next = Fingerprint(Current.current.images) !== SavedImages.current
+    const Next = DraftDirty.current || Fingerprint(BoardItems(Current.current)) !== SavedItems.current
     DirtyRef.current = Next
     SetDirty(Next)
     window.HybridRef.SetDirty(Next)
@@ -80,10 +86,13 @@ export default function App(): React.ReactElement {
     Current.current = Next
     SetDocument(Next)
   }
-  function Images(Next: BoardImage[], IsRecord = true): void {
-    if (Fingerprint(Next) === Fingerprint(Current.current.images)) return
-    if (IsRecord) { Past.current.push(Current.current.images); Future.current = []; SetHistoryVersion((Value) => Value + 1) }
-    Publish({ ...Current.current, images: Next })
+  function PublishItems(Next: BoardItem[]): void {
+    Publish({ ...Current.current, images: Next.filter((Item): Item is BoardImage => !('text' in Item)), texts: Next.filter((Item): Item is BoardText => 'text' in Item) })
+  }
+  function Items(Next: BoardItem[], IsRecord = true): void {
+    if (Fingerprint(Next) === Fingerprint(BoardItems(Current.current))) return
+    if (IsRecord) { Past.current.push(BoardItems(Current.current)); Future.current = []; SetHistoryVersion((Value) => Value + 1) }
+    PublishItems(Next)
     RefreshDirty()
   }
   function History(Direction: 'undo' | 'redo'): void {
@@ -92,8 +101,8 @@ export default function App(): React.ReactElement {
     const To = Direction === 'undo' ? Future : Past
     const Next = From.current.pop()
     if (!Next) return
-    To.current.push(Current.current.images)
-    Publish({ ...Current.current, images: Next })
+    To.current.push(BoardItems(Current.current))
+    PublishItems(Next)
     Select(Selection.current.filter((Id) => Next.some((Item) => Item.id === Id)))
     SetHistoryVersion((Value) => Value + 1)
     RefreshDirty()
@@ -126,6 +135,8 @@ export default function App(): React.ReactElement {
     Items[NextIndex]?.focus()
   }
   function Reset(Next: BoardDocument, NextPath: string | null, NextAssets: ImageAsset[]): void {
+    SetEditingId(null)
+    DraftDirty.current = false
     Session.current += 1
     ClearImageCache()
     AssetMap.current = Object.fromEntries(NextAssets.map((Asset) => [Asset.id, Asset]))
@@ -142,7 +153,7 @@ export default function App(): React.ReactElement {
     Publish(Next)
     Select([])
     CurrentPath.current = NextPath; SetPath(NextPath)
-    SavedImages.current = Fingerprint(Next.images)
+    SavedItems.current = Fingerprint(BoardItems(Next))
     RefreshDirty()
     SetMessage('')
   }
@@ -185,7 +196,7 @@ export default function App(): React.ReactElement {
         const Result = await window.HybridRef.Save(Snapshot, SaveAs ? null : CurrentPath.current)
         if (!Result || Revision !== Session.current) return false
         CurrentPath.current = Result.path; SetPath(Result.path)
-        SavedImages.current = Fingerprint(Snapshot.images)
+        SavedItems.current = Fingerprint(BoardItems(Snapshot))
         RefreshDirty()
         SetMessage(DirtyRef.current ? '已保存；还有新的修改未保存' : '已保存')
         return !DirtyRef.current
@@ -203,6 +214,41 @@ export default function App(): React.ReactElement {
     const Size = ViewportSize()
     return ScreenToWorld({ x: Size.width / 2, y: Size.height / 2 }, Current.current.viewport)
   }
+  function AddText(Content = '文字', Edit = true): void {
+    if (WorkingRef.current || Gesture.current) return
+    StartupAllowed.current = false
+    CloseProjectMenu()
+    const Position = Center()
+    const Height = Math.min(600, Math.max(160, Content.split('\n').length * 36 + 24))
+    const Item: BoardText = { id: Uuid(), x: Position.x - 180, y: Position.y - Height / 2, width: 360, height: Height, text: EmptyTextResource(Content) }
+    Items([...BoardItems(Current.current), Item])
+    Select([Item.id])
+    if (Edit) SetEditingId(Item.id)
+    else Canvas.current?.focus()
+  }
+  function EditText(Id: string): void {
+    if (WorkingRef.current || Space.current) return
+    Finish()
+    Select([Id])
+    SetEditingId(Id)
+  }
+  function DoubleClick(InputEvent: React.MouseEvent): void {
+    const Point = ScreenToWorld(LocalPoint(InputEvent.clientX, InputEvent.clientY), Current.current.viewport)
+    // Pointer capture routes the final click to the canvas, so hit-test the visible text frames.
+    const Item = [...Current.current.texts].reverse().find((Item) => Point.x >= Item.x && Point.x <= Item.x + Item.width && Point.y >= Item.y && Point.y <= Item.y + Item.height)
+    if (Item) EditText(Item.id)
+  }
+  function ApplyText(Resource: TextResource, Save = false, SaveAs = false): void {
+    DraftDirty.current = false
+    const Text = structuredClone(Resource)
+    Text.font.family = Text.font.family.trim() || 'Microsoft YaHei'
+    Items(BoardItems(Current.current).map((Item) => Item.id === EditingId && 'text' in Item ? { ...Item, text: Text } : Item))
+    RefreshDirty()
+    SetEditingId(null)
+    Canvas.current?.focus()
+    if (Save) void SaveBoard(SaveAs)
+  }
+  function CloseTextEditor(): void { DraftDirty.current = false; RefreshDirty(); SetEditingId(null); Canvas.current?.focus() }
   async function AddAssets(Result: ImportResult, Revision: number, Position: Point): Promise<void> {
     if (Revision !== Session.current) return
     await DecodeAssets(Result.assets)
@@ -215,7 +261,7 @@ export default function App(): React.ReactElement {
       const Width = Asset.width * Ratio, Height = Asset.height * Ratio
       return { id: Uuid(), asset: Asset.id, x: Position.x - Width / 2 + Index * 28, y: Position.y - Height / 2 + Index * 28, width: Width, height: Height }
     })
-    if (Imported.length) { Images([...Current.current.images, ...Imported]); Select(Imported.map((Item) => Item.id)) }
+    if (Imported.length) { Items([...BoardItems(Current.current), ...Imported]); Select(Imported.map((Item) => Item.id)) }
     SetMessage(Result.errors.length ? Result.errors.join('；') : Imported.length ? `已导入 ${Imported.length} 张图片` : '')
   }
   async function ImportFiles(Files: File[], Position = Center()): Promise<void> {
@@ -241,11 +287,11 @@ export default function App(): React.ReactElement {
   }
   function DeleteSelected(): void {
     const Ids = new Set(Selection.current)
-    Images(Current.current.images.filter((Item) => !Ids.has(Item.id)))
+    Items(BoardItems(Current.current).filter((Item) => !Ids.has(Item.id)))
     Select([])
   }
   function Copy(InputEvent: ClipboardEvent, Cut = false): void {
-    const SelectedImages = Current.current.images.filter((Item) => Selection.current.includes(Item.id))
+    const SelectedImages = BoardItems(Current.current).filter((Item) => Selection.current.includes(Item.id))
     if (!SelectedImages.length || !InputEvent.clipboardData) return
     InternalClipboard.current = structuredClone(SelectedImages)
     ClipboardToken.current = `hybridref:${Uuid()}`
@@ -255,10 +301,10 @@ export default function App(): React.ReactElement {
     InputEvent.preventDefault()
     if (Cut) DeleteSelected()
   }
-  function InsertCopies(Source: BoardImage[], Offset: number): void {
-    const Copies = Source.filter((Item) => AssetMap.current[Item.asset]).map((Item) => ({ ...Item, id: Uuid(), x: Item.x + Offset, y: Item.y + Offset }))
+  function InsertCopies(Source: BoardItem[], Offset: number): void {
+    const Copies = Source.filter((Item) => 'text' in Item || AssetMap.current[Item.asset]).map((Item) => ({ ...structuredClone(Item), id: Uuid(), x: Item.x + Offset, y: Item.y + Offset }))
     if (!Copies.length) return
-    Images([...Current.current.images, ...Copies])
+    Items([...BoardItems(Current.current), ...Copies])
     Select(Copies.map((Item) => Item.id))
   }
   function Paste(InputEvent: ClipboardEvent): void {
@@ -272,9 +318,12 @@ export default function App(): React.ReactElement {
       if (WorkingRef.current) return
       PasteOffset.current += 24
       InsertCopies(InternalClipboard.current, PasteOffset.current)
+    } else if (Content.getData('text/plain') && !Token.startsWith('hybridref:')) {
+      InputEvent.preventDefault()
+      AddText(Content.getData('text/plain'), false)
     }
   }
-  function Fit(): void { Publish({ ...Current.current, viewport: FitViewport(BoundingBox(Current.current.images), ViewportSize(), 56) }) }
+  function Fit(): void { Publish({ ...Current.current, viewport: FitViewport(BoundingBox(BoardItems(Current.current)), ViewportSize(), 56) }) }
   function ChangeZoom(Next: number): void {
     const Size = ViewportSize()
     Publish({ ...Current.current, viewport: ZoomAt(Current.current.viewport, { x: Size.width / 2, y: Size.height / 2 }, Next) })
@@ -283,19 +332,19 @@ export default function App(): React.ReactElement {
     if (InputEvent.metaKey || InputEvent.shiftKey || InputEvent.isComposing || InputEvent.repeat
       || WorkingRef.current || Gesture.current || Space.current || Selection.current.length < 2) return false
     const Key = InputEvent.key.toLowerCase()
-    let Next: BoardImage[] | undefined
+    let Next: BoardItem[] | undefined
     if (InputEvent.ctrlKey && InputEvent.altKey) {
       const Mode = NormalizeShortcuts[Key]
-      if (Mode) Next = NormalizeImages(Current.current.images, Selection.current, Mode)
+      if (Mode) Next = NormalizeImages(BoardItems(Current.current), Selection.current, Mode)
     } else if (!InputEvent.altKey) {
       const Direction = (InputEvent.ctrlKey ? DirectionalPushShortcuts : PushShortcuts)[Key]
       const CenterMode = !InputEvent.ctrlKey ? CenterShortcuts[Key] : undefined
-      if (Direction) Next = PushImages(Current.current.images, Selection.current, Direction)
-      else if (CenterMode) Next = CenterImages(Current.current.images, Selection.current, CenterMode)
+      if (Direction) Next = PushImages(BoardItems(Current.current), Selection.current, Direction)
+      else if (CenterMode) Next = CenterImages(BoardItems(Current.current), Selection.current, CenterMode)
     }
     if (!Next) return false
     InputEvent.preventDefault()
-    Images(Next)
+    Items(Next)
     return true
   }
 
@@ -304,12 +353,13 @@ export default function App(): React.ReactElement {
     return { x: ClientX - Rect.left, y: ClientY - Rect.top }
   }
   function Begin(InputEvent: React.PointerEvent, ImageId?: string, Corner?: ResizeCorner): void {
+    if (EditingId || WorkingRef.current) return
     if (InputEvent.button !== 0 && InputEvent.button !== 1) return
     InputEvent.preventDefault()
     InputEvent.stopPropagation()
     const Start = LocalPoint(InputEvent.clientX, InputEvent.clientY)
     Canvas.current!.setPointerCapture(InputEvent.pointerId)
-    const Base = { start: Start, viewport: Current.current.viewport, before: Current.current.images, selected: [...Selection.current] }
+    const Base = { start: Start, viewport: Current.current.viewport, before: BoardItems(Current.current), selected: [...Selection.current] }
     if (InputEvent.button === 1 || Space.current) { Gesture.current = { ...Base, kind: 'pan' }; return }
     if (Corner) { Gesture.current = { ...Base, kind: 'resize', corner: Corner }; return }
     if (ImageId) {
@@ -341,8 +391,18 @@ export default function App(): React.ReactElement {
     }
     if (Math.abs(Delta.x) + Math.abs(Delta.y) < 2) return
     const SelectedImages = Active.before.filter((Item) => Active.selected.includes(Item.id))
-    let Changed: BoardImage[]
-    if (Active.kind === 'resize') Changed = ResizeGroup(SelectedImages, Active.corner!, ScreenToWorld(Point, Active.viewport), 4 / Active.viewport.zoom)
+    let Changed: BoardItem[]
+    if (Active.kind === 'resize') {
+      const Pointer = ScreenToWorld(Point, Active.viewport)
+      const First = SelectedImages[0]
+      const TextPointer = First ? {
+        x: First.x + (Active.corner === 'nw' || Active.corner === 'sw' ? 0 : First.width) + Delta.x / Active.viewport.zoom,
+        y: First.y + (Active.corner === 'nw' || Active.corner === 'ne' ? 0 : First.height) + Delta.y / Active.viewport.zoom,
+      } : Pointer
+      Changed = SelectedImages.length === 1 && 'text' in SelectedImages[0]
+        ? [ResizeTextFrame(SelectedImages[0], Active.corner!, TextPointer)]
+        : ResizeGroup(SelectedImages, Active.corner!, Pointer, 4 / Active.viewport.zoom)
+    }
     else {
       const Bounds = BoundingBox(SelectedImages)
       if (!Bounds) return
@@ -353,14 +413,14 @@ export default function App(): React.ReactElement {
       Changed = SelectedImages.map((Item) => ({ ...Item, x: Item.x + Snapped.dx, y: Item.y + Snapped.dy }))
     }
     const ById = new Map(Changed.map((Item) => [Item.id, Item]))
-    Images(Active.before.map((Item) => ById.get(Item.id) ?? Item), false)
+    Items(Active.before.map((Item) => ById.get(Item.id) ?? Item), false)
   }
   function Finish(InputEvent?: React.PointerEvent, Cancel = false): void {
     const Active = Gesture.current
     if (!Active) return
     if (Active.kind === 'move' || Active.kind === 'resize') {
-      if (Cancel) Images(Active.before, false)
-      else if (Fingerprint(Active.before) !== Fingerprint(Current.current.images)) {
+      if (Cancel) Items(Active.before, false)
+      else if (Fingerprint(Active.before) !== Fingerprint(BoardItems(Current.current))) {
         Past.current.push(Active.before); Future.current = []; SetHistoryVersion((Value) => Value + 1)
       }
     }
@@ -401,6 +461,7 @@ export default function App(): React.ReactElement {
   UseEffect(() => {
     const Element = Canvas.current!
     const Wheel = (InputEvent: WheelEvent) => {
+      if (EditingId) return
       InputEvent.preventDefault()
       const Point = LocalPoint(InputEvent.clientX, InputEvent.clientY)
       const Scale = Math.exp(-InputEvent.deltaY * (InputEvent.deltaMode === 1 ? 0.025 : 0.0015))
@@ -408,11 +469,11 @@ export default function App(): React.ReactElement {
     }
     Element.addEventListener('wheel', Wheel, { passive: false })
     return () => Element.removeEventListener('wheel', Wheel)
-  }, [])
+  }, [EditingId])
   UseEffect(() => {
-    const EditingText = (Target: EventTarget | null): boolean => IsFileDialogOpen() || Target instanceof HTMLInputElement || Target instanceof HTMLTextAreaElement || Boolean((Target as HTMLElement)?.isContentEditable)
+    const EditingText = (Target: EventTarget | null): boolean => IsFileDialogOpen() || Target instanceof HTMLInputElement || Target instanceof HTMLTextAreaElement || Target instanceof HTMLSelectElement || Boolean((Target as HTMLElement)?.isContentEditable)
     const Down = (InputEvent: KeyboardEvent) => {
-      if (EditingText(InputEvent.target)) return
+      if (EditingId || EditingText(InputEvent.target)) return
       const Modifier = InputEvent.ctrlKey || InputEvent.metaKey
       const Key = InputEvent.key.toLowerCase()
       if (ProjectMenuOpen) {
@@ -423,8 +484,8 @@ export default function App(): React.ReactElement {
       if (Key === 'escape') { Finish(undefined, true); Select([]); return }
       if (TransformSelection(InputEvent)) return
       const Action = Modifier ? ({
-        a: () => Select(Current.current.images.map((Item) => Item.id)),
-        d: () => InsertCopies(Current.current.images.filter((Item) => Selection.current.includes(Item.id)), 24),
+        a: () => Select(BoardItems(Current.current).map((Item) => Item.id)),
+        d: () => InsertCopies(BoardItems(Current.current).filter((Item) => Selection.current.includes(Item.id)), 24),
         z: () => History(InputEvent.shiftKey ? 'redo' : 'undo'), y: () => History('redo'),
         s: () => { void SaveBoard(InputEvent.shiftKey) }, o: ToggleProjectMenu,
       } as Record<string, (() => void)>)[Key] : ({
@@ -435,9 +496,9 @@ export default function App(): React.ReactElement {
     }
     const Up = (InputEvent: KeyboardEvent) => { if (InputEvent.code === 'Space') { Space.current = false; SetSpaceHeld(false) } }
     const Blur = () => { Space.current = false; SetSpaceHeld(false); Finish(undefined, true) }
-    const Copied = (InputEvent: ClipboardEvent) => { if (!ProjectMenuOpen && !EditingText(InputEvent.target)) Copy(InputEvent) }
-    const Cut = (InputEvent: ClipboardEvent) => { if (!ProjectMenuOpen && !EditingText(InputEvent.target)) Copy(InputEvent, true) }
-    const Pasted = (InputEvent: ClipboardEvent) => { if (!ProjectMenuOpen && !EditingText(InputEvent.target)) Paste(InputEvent) }
+    const Copied = (InputEvent: ClipboardEvent) => { if (!EditingId && !ProjectMenuOpen && !EditingText(InputEvent.target)) Copy(InputEvent) }
+    const Cut = (InputEvent: ClipboardEvent) => { if (!EditingId && !ProjectMenuOpen && !EditingText(InputEvent.target)) Copy(InputEvent, true) }
+    const Pasted = (InputEvent: ClipboardEvent) => { if (!EditingId && !ProjectMenuOpen && !EditingText(InputEvent.target)) Paste(InputEvent) }
     window.addEventListener('keydown', Down); window.addEventListener('keyup', Up); window.addEventListener('blur', Blur)
     window.addEventListener('copy', Copied); window.addEventListener('cut', Cut); window.addEventListener('paste', Pasted)
     return () => {
@@ -446,7 +507,8 @@ export default function App(): React.ReactElement {
     }
   })
 
-  const Bounds = BoundingBox(Document.images.filter((Item) => Selected.includes(Item.id)))
+  const Bounds = BoundingBox(BoardItems(Document).filter((Item) => Selected.includes(Item.id)))
+  const Editing = Document.texts.find((Item) => Item.id === EditingId)
   const View = Document.viewport
   const SelectionStyle = Bounds ? { left: View.x + Bounds.x * View.zoom, top: View.y + Bounds.y * View.zoom, width: Bounds.width * View.zoom, height: Bounds.height * View.zoom } : undefined
   return <div className="app" data-history-version={HistoryVersion}>
@@ -465,26 +527,35 @@ export default function App(): React.ReactElement {
         </div>}
       </div>
       <button data-testid="save" className="save-button" aria-label={Dirty ? '保存（有未保存的修改）' : '保存'} disabled={Working > PendingSaves.current} title="保存 · Ctrl+S / 另存为 · Ctrl+Shift+S" onClick={() => void SaveBoard()}>保存{Dirty && <span className="save-dirty" aria-hidden="true">*</span>}</button>
+      <button data-testid="add-text" disabled={Working > 0} title="创建文字，双击文字可再次编辑" onClick={() => AddText()}>文本</button>
       <span className="filename" title={Path || undefined}>{Path?.split(/[\\/]/).pop() || '未命名画板'}</span>
       {Working > 0 && <span className="working" role="status">处理中…</span>}
     </header>
     <div ref={Canvas} data-testid="canvas" className={`canvas${SpaceHeld ? ' can-pan' : ''}`} tabIndex={-1}
       onPointerDown={(InputEvent) => Begin(InputEvent)} onPointerMove={Move} onPointerUp={(InputEvent) => Finish(InputEvent)} onPointerCancel={(InputEvent) => Finish(InputEvent, true)}
+      onDoubleClick={DoubleClick}
       onContextMenu={(InputEvent) => InputEvent.preventDefault()} onDragOver={(InputEvent) => { InputEvent.preventDefault(); InputEvent.dataTransfer.dropEffect = 'copy' }} onDrop={(InputEvent) => void Drop(InputEvent)}>
       <div className="world" style={{ transform: `translate(${View.x}px, ${View.y}px) scale(${View.zoom})` }}>
         {Document.images.map((Item) => <img key={Item.id} data-testid="image-item" data-image-id={Item.id} data-asset-id={Item.asset} data-x={Item.x} data-y={Item.y} data-width={Item.width} data-height={Item.height}
           className={Selected.includes(Item.id) ? 'board-image selected' : 'board-image'} src={Assets[Item.asset]?.dataUrl} alt="参考图片" draggable={false}
           style={{ left: Item.x, top: Item.y, width: Item.width, height: Item.height, outlineWidth: 1 / View.zoom }} onPointerDown={(InputEvent) => Begin(InputEvent, Item.id)} />)}
+        {Document.texts.map((Item) => <div key={Item.id} data-testid="text-item" data-text-id={Item.id} data-x={Item.x} data-y={Item.y} data-width={Item.width} data-height={Item.height}
+          className={Selected.includes(Item.id) ? 'board-text selected' : 'board-text'} title="双击编辑文字；拖动角点调整文本框，字号保持不变"
+          style={{ left: Item.x, top: Item.y, width: Item.width, height: Item.height, outlineWidth: 1 / View.zoom,
+            padding: Item.text.padding, fontFamily: Item.text.font.family, fontSize: Item.text.font.size, fontWeight: Item.text.font.weight,
+            color: TextColor(Item.text.font.color, Item.text.font.opacity), backgroundColor: TextColor(Item.text.background.color, Item.text.background.opacity),
+            textAlign: Item.text.paragraph.align, lineHeight: Item.text.paragraph.lineHeight }}
+          onPointerDown={(InputEvent) => Begin(InputEvent, Item.id)}>{Item.text.content}</div>)}
       </div>
-      {!Document.images.length && <div className="empty"><span>拖入图片，开始整理参考</span><small>或使用 Ctrl+V 粘贴截图</small></div>}
+      {!Document.images.length && !Document.texts.length && <div className="empty"><span>拖入图片，开始整理参考</span><small>Ctrl+V 粘贴截图或文字 · 点击「文本」添加说明</small></div>}
       {Bounds && <div data-testid="selection-box" className="selection-box" style={SelectionStyle}>
-        {(['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((Corner) => <button key={Corner} data-testid={`resize-${Corner}`} className={`resize-handle ${Corner}`} aria-label={`等比缩放 ${Corner}`} onPointerDown={(InputEvent) => Begin(InputEvent, undefined, Corner)} />)}
+        {(['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((Corner) => <button key={Corner} data-testid={`resize-${Corner}`} className={`resize-handle ${Corner}`} aria-label={`调整尺寸 ${Corner}`} onPointerDown={(InputEvent) => Begin(InputEvent, undefined, Corner)} />)}
       </div>}
       {Marquee && <div data-testid="marquee" className="marquee" style={{ left: Marquee.x, top: Marquee.y, width: Marquee.width, height: Marquee.height }} />}
       {Guides.map((Guide, Index) => <div key={Index} data-testid="snap-guide" className={`snap-guide ${Guide.axis}`} style={Guide.axis === 'x' ? { left: View.x + Guide.position * View.zoom } : { top: View.y + Guide.position * View.zoom }} />)}
     </div>
     <footer className="statusbar">
-      <span data-testid="status">{Document.images.length} 张图片 · 已选 {Selected.length}</span>
+      <span data-testid="status">{Document.images.length} 张图片{Document.texts.length ? ` · ${Document.texts.length} 段文字` : ''} · 已选 {Selected.length}</span>
       <span className="hint">滚轮缩放 · 中键 / 空格平移 · Shift 多选 · Alt 暂停吸附</span>
       <span className="message" role="status" title={Message}>{Message}</span>
       <button data-testid="zoom-out" aria-label="缩小" onClick={() => ChangeZoom(View.zoom / 1.2)}>−</button>
@@ -492,5 +563,6 @@ export default function App(): React.ReactElement {
       <button data-testid="zoom-in" aria-label="放大" onClick={() => ChangeZoom(View.zoom * 1.2)}>＋</button>
       <button data-testid="fit" title="适应画板 · F" onClick={Fit}>适应</button>
     </footer>
+    {Editing && <TextEditor key={Editing.id} Resource={Editing.text} OnApply={(Resource) => ApplyText(Resource)} OnSave={(Resource, SaveAs) => ApplyText(Resource, true, SaveAs)} OnCancel={CloseTextEditor} OnDirty={(Dirty) => { DraftDirty.current = Dirty; RefreshDirty() }} />}
   </div>
 }

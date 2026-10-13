@@ -1,8 +1,9 @@
-import type { BoardImage, Viewport } from '../Shared/Types'
+import type { Viewport } from '../Shared/Types'
 
 export interface Point { x: number; y: number }
 export interface Size { width: number; height: number }
 export interface Rect extends Point, Size {}
+export interface BoardRect extends Rect { id: string }
 export type PushDirection = 'left' | 'right' | 'top' | 'bottom'
 export type CenterMode = 'horizontal' | 'vertical'
 export type NormalizeMode = 'width' | 'height'
@@ -55,7 +56,7 @@ export function Intersects(A: Rect, B: Rect): boolean {
 }
 
 /** Close gaps on one axis while preserving the other axis, sizes and layer order. */
-export function PushImages(Images: readonly BoardImage[], SelectedIds: readonly string[] | ReadonlySet<string>, Direction: PushDirection): BoardImage[] {
+export function PushImages<Item extends BoardRect>(Images: readonly Item[], SelectedIds: readonly string[] | ReadonlySet<string>, Direction: PushDirection): Item[] {
   const Selected = new Set(SelectedIds)
   const Targets = Images.filter((ImageValue) => Selected.has(ImageValue.id))
   if (Targets.length < 2) return [...Images]
@@ -77,7 +78,7 @@ export function PushImages(Images: readonly BoardImage[], SelectedIds: readonly 
   // Read the far edge directly: rebuilding it from min + bounding size adds
   // cancellation error when a previous push expanded the bounds backwards.
   const Edge = Reverse ? Targets.reduce((Maximum, ImageValue) => Math.max(Maximum, ImageValue[Axis] + ImageValue[Dimension]), -Infinity) : Bounds[Axis]
-  const Placed = new Map<string, BoardImage>()
+  const Placed = new Map<string, Item>()
   for (const ImageValue of Ordered) {
     let Position = Edge - (Reverse ? ImageValue[Dimension] : 0)
     for (const Other of Placed.values()) {
@@ -95,7 +96,7 @@ export function PushImages(Images: readonly BoardImage[], SelectedIds: readonly 
 }
 
 /** Match selected centres to the centre of their bounding box on one axis. */
-export function CenterImages(Images: readonly BoardImage[], SelectedIds: readonly string[] | ReadonlySet<string>, Mode: CenterMode): BoardImage[] {
+export function CenterImages<Item extends BoardRect>(Images: readonly Item[], SelectedIds: readonly string[] | ReadonlySet<string>, Mode: CenterMode): Item[] {
   const Selected = new Set(SelectedIds)
   const Bounds = BoundingBox(Images.filter((ImageValue) => Selected.has(ImageValue.id)))
   if (!Bounds) return [...Images]
@@ -108,7 +109,7 @@ export function CenterImages(Images: readonly BoardImage[], SelectedIds: readonl
 }
 
 /** Normalize selected dimensions to their average, preserving each image's centre and aspect ratio. */
-export function NormalizeImages(Images: readonly BoardImage[], SelectedIds: readonly string[] | ReadonlySet<string>, Mode: NormalizeMode): BoardImage[] {
+export function NormalizeImages<Item extends BoardRect>(Images: readonly Item[], SelectedIds: readonly string[] | ReadonlySet<string>, Mode: NormalizeMode): Item[] {
   const Selected = new Set(SelectedIds)
   const Targets = Images.filter((ImageValue) => Selected.has(ImageValue.id)
     && [ImageValue.x, ImageValue.y, ImageValue.width, ImageValue.height].every(Number.isFinite)
@@ -117,7 +118,7 @@ export function NormalizeImages(Images: readonly BoardImage[], SelectedIds: read
   // An incremental mean avoids overflowing the sum of otherwise valid sizes.
   const Dimension = Targets.reduce((Average, ImageValue, Index) => Average + (ImageValue[Mode] - Average) / (Index + 1), 0)
   if (!Number.isFinite(Dimension) || Dimension <= 0) return [...Images]
-  const Normalized = new Map<string, BoardImage>()
+  const Normalized = new Map<string, Item>()
   for (const ImageValue of Targets) {
     if (ImageValue[Mode] === Dimension) continue
     const Scale = Dimension / ImageValue[Mode]
@@ -167,7 +168,7 @@ export function SnapMove(Bounds: Rect, Others: readonly Rect[], Dx: number, Dy: 
  * Project the pointer onto the original corner diagonal for one uniform scale.
  * The opposite corner remains fixed, and crossing it cannot flip any image.
  */
-export function ResizeGroup(Images: readonly BoardImage[], Corner: ResizeCorner, Pointer: Point, MinSize = 1): BoardImage[] {
+export function ResizeGroup<Item extends BoardRect>(Images: readonly Item[], Corner: ResizeCorner, Pointer: Point, MinSize = 1): Item[] {
   const Bounds = BoundingBox(Images)
   if (!Bounds || Bounds.width <= 0 || Bounds.height <= 0) return [...Images]
   const Left = Corner === 'nw' || Corner === 'sw'
@@ -186,6 +187,17 @@ export function ResizeGroup(Images: readonly BoardImage[], Corner: ResizeCorner,
     width: ImageValue.width * Scale,
     height: ImageValue.height * Scale,
   }))
+}
+
+/** Text frames wrap content at their new width; font size is independent of the frame. */
+export function ResizeTextFrame<Item extends BoardRect>(Item: Item, Corner: ResizeCorner, Pointer: Point, MinSize = 24): Item {
+  const Left = Corner === 'nw' || Corner === 'sw'
+  const Top = Corner === 'nw' || Corner === 'ne'
+  const AnchorX = Left ? Item.x + Item.width : Item.x
+  const AnchorY = Top ? Item.y + Item.height : Item.y
+  const Width = Math.max(MinSize, Left ? AnchorX - Pointer.x : Pointer.x - AnchorX)
+  const Height = Math.max(MinSize, Top ? AnchorY - Pointer.y : Pointer.y - AnchorY)
+  return { ...Item, x: Left ? AnchorX - Width : AnchorX, y: Top ? AnchorY - Height : AnchorY, width: Width, height: Height }
 }
 
 export function FitViewport(Bounds: Rect | null, Size: Size, Padding = 64): Viewport {

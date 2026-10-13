@@ -18,7 +18,7 @@ function NewestSource(Folder) {
 
 function BuildState(ModuleRoot) {
   const Outputs = ['Output/Server/Index.cjs', 'Output/Web/Index.html'].map(FileValue => Path.join(ModuleRoot, FileValue))
-  const Inputs = ['package.json', 'vite.config.ts', 'Scripts/Build.cjs'].map(FileValue => Fs.statSync(Path.join(ModuleRoot, FileValue)).mtimeMs)
+  const Inputs = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'vite.config.ts', 'Scripts/Build.cjs'].map(FileValue => Fs.statSync(Path.join(ModuleRoot, FileValue)).mtimeMs)
   const SourceTime = Math.max(NewestSource(Path.join(ModuleRoot, 'Source')), NewestSource(Path.join(ModuleRoot, '../Resource')), ...Inputs)
   const Complete = Outputs.every(FileValue => Fs.existsSync(FileValue) && Fs.statSync(FileValue).isFile())
   const Times = Complete ? Outputs.map(FileValue => Fs.statSync(FileValue).mtimeMs) : []
