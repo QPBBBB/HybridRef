@@ -1,0 +1,189 @@
+import React, { useMemo } from 'react'
+import { nanoid } from 'nanoid'
+import type { CanvasItem } from '../../types'
+import { useCanvasStore } from '../store/canvasStore'
+import { useHistoryStore } from '../store/historyStore'
+import { useUIStore } from '../store/uiStore'
+import { pathToUrl } from '../utils/pathToUrl'
+import { buildAssetLibrary, type AssetLibraryEntry } from './assetLibraryModel'
+import { activeArchiveRailWidth } from './shell/shellModel'
+import { ToolIcon } from './icons/ToolIcon'
+
+const previewTypes = new Set(['image', 'gif'])
+
+function itemLabel(entry: AssetLibraryEntry): string {
+  return `${entry.type} / ${entry.count} use${entry.count === 1 ? '' : 's'}`
+}
+
+function assetItemFromEntry(entry: AssetLibraryEntry): CanvasItem | undefined {
+  return useCanvasStore.getState()
+    .boards.find((board) => board.id === entry.firstBoardId)
+    ?.items.find((item) => item.id === entry.firstItemId)
+}
+
+function focusAsset(entry: AssetLibraryEntry): void {
+  const item = assetItemFromEntry(entry)
+  if (!item) return
+  const expandedRailWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-right-w') || '228')
+  const sidebarW = activeArchiveRailWidth(useUIStore.getState().archiveRailCollapsed, expandedRailWidth)
+  const canvasW = window.innerWidth - sidebarW
+  const canvas = useCanvasStore.getState()
+  const viewport = canvas.viewport()
+  canvas.setActiveBoard(entry.firstBoardId)
+  canvas.setSelection([entry.firstItemId])
+  canvas.updateViewport({
+    x: canvasW / 2 - (item.x + item.width / 2) * viewport.scale,
+    y: window.innerHeight / 2 - (item.y + item.height / 2) * viewport.scale,
+  })
+  useUIStore.getState().setSearchHighlight(entry.firstItemId)
+  window.setTimeout(() => {
+    if (useUIStore.getState().searchHighlightId === entry.firstItemId) {
+      useUIStore.getState().setSearchHighlight(null)
+    }
+  }, 900)
+}
+
+function placeAsset(entry: AssetLibraryEntry): void {
+  const source = assetItemFromEntry(entry)
+  const { activeBoardId, addItem, setSelection, viewport } = useCanvasStore.getState()
+  if (!source || !activeBoardId) return
+  const vp = viewport()
+  const expandedRailWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-right-w') || '228')
+  const sidebarW = activeArchiveRailWidth(useUIStore.getState().archiveRailCollapsed, expandedRailWidth)
+  const canvasW = window.innerWidth - sidebarW
+  const cx = (canvasW / 2 - vp.x) / vp.scale
+  const cy = (window.innerHeight / 2 - vp.y) / vp.scale
+  const copy: CanvasItem = {
+    ...source,
+    id: nanoid(),
+    x: cx - source.width / 2,
+    y: cy - source.height / 2,
+    zIndex: Date.now(),
+    locked: false,
+  }
+  addItem(activeBoardId, copy)
+  useHistoryStore.getState().push('ITEM_ADD', activeBoardId, null, copy)
+  setSelection([copy.id])
+}
+
+export function AssetLibrary(): React.ReactElement | null {
+  const isOpen = useUIStore((s) => s.panels.assetLibrary)
+  const closePanel = useUIStore((s) => s.closePanel)
+  const boards = useCanvasStore((s) => s.boards)
+  const assets = useMemo(() => buildAssetLibrary(boards), [boards])
+
+  if (!isOpen) return null
+
+  return (
+    <div
+      className="citadel-floating-panel"
+      style={{
+        position: 'absolute',
+        top: 48,
+        right: 'calc(var(--context-rail-w) + 8px)',
+        width: 340,
+        maxHeight: 'calc(100vh - 72px)',
+        background: 'var(--bg-panel)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius-md)',
+        padding: 10,
+        zIndex: 'var(--z-panels)',
+        boxShadow: 'var(--shadow-md)',
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-4)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--space-4)' }}>
+        <h3 style={{ margin: 0, fontSize: 'var(--text-md)', fontFamily: 'var(--font-display)', color: 'var(--text-accent)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+          Items
+        </h3>
+        <button
+          type="button"
+          onClick={() => closePanel('assetLibrary')}
+          title="Close"
+          aria-label="Close"
+          style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 0 }}
+        >
+          <ToolIcon name="close" size={16} />
+        </button>
+      </div>
+
+      {assets.length === 0 ? (
+        <div style={{ color: 'var(--text-muted)', fontSize: 'var(--text-md)', fontFamily: 'var(--font-body)', display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+          <ToolIcon name="plus" size={14} />
+          No imported files yet
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', overflowY: 'auto', paddingRight: 2 }}>
+          {assets.map((entry) => (
+            <div
+              key={entry.src}
+              className="citadel-list-row"
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '44px 1fr auto',
+                gap: 'var(--space-4)',
+                alignItems: 'center',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-md)',
+                padding: 6,
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => focusAsset(entry)}
+                title="Jump to first use"
+                style={{
+                  width: 44,
+                  height: 34,
+                  border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'var(--bg-ui)',
+                  padding: 0,
+                  overflow: 'hidden',
+                  cursor: 'pointer',
+                }}
+              >
+                {previewTypes.has(entry.type) ? (
+                  <img src={pathToUrl(entry.src)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                ) : (
+                  <span style={{ color: 'var(--text-accent)', fontSize: 'var(--text-sm)', fontFamily: 'var(--font-mono)', textTransform: 'uppercase' }}>
+                    {entry.type.slice(0, 3)}
+                  </span>
+                )}
+              </button>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ color: 'var(--text-primary)', fontSize: 'var(--text-base)', fontFamily: 'var(--font-body)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {entry.filename}
+                </div>
+                <div style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 }}>
+                  {itemLabel(entry)}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => placeAsset(entry)}
+                title="Place another copy on active board"
+                style={{
+                  height: 24,
+                  padding: '0 8px',
+                  border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'var(--bg-ui)',
+                  color: 'var(--text-secondary)',
+                  fontSize: 'var(--text-sm)',
+                  fontFamily: 'var(--font-mono)',
+                  cursor: 'pointer',
+                }}
+              >
+                Place
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}

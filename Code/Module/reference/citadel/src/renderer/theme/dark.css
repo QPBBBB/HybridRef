@@ -1,0 +1,316 @@
+/* ── Citadel Design Tokens ─────────────────────────────────────────────────── */
+/* Dark theme is the default.
+   Its tokens sit on :root, which every theme file out-specifies with
+   `html[data-theme="…"]`. That is deliberate and load-order independent: this
+   file is imported by two entry points (main.tsx and the Stop window), so Vite
+   hoists it into a shared chunk that the HTML happens to link AFTER the themes.
+   With equal specificity the default would then win and no theme would apply. Light theme overrides go in light.css on         */
+/* [data-theme="light"]. ThemeProvider sets data-theme at runtime.             */
+
+:root {
+  /* Backgrounds */
+  --bg-canvas:   #0f0d0b;
+  --bg-ui:       #17130f;
+  --bg-panel:    #1d1813;
+  --bg-hover:    #282017;
+  --bg-elevated: #241e17;
+  --bg-sunken:   #0a0907;
+  /* Flat canvas ground. Neutral on purpose: a warm or cool cast here shifts
+     how every reference image on the board reads. */
+  --canvas-flat: #1b1b1b;
+  --canvas-dot:  #343437;
+
+  /* Text */
+  --text-primary:   #e8ddd0;
+  --text-secondary: #b9ad9f;
+  --text-muted:     #81766a;
+  --text-accent:    #9fc3e6;
+
+  /* Accent */
+  --accent:        #73a8db;
+  --accent-soft:   rgba(115, 168, 219, 0.16);
+  --accent-danger: #d36472;
+
+  /* Borders */
+  --border:        #3a3025;
+  --border-muted:  #292117;
+  --border-bright: rgba(232, 221, 208, 0.10);
+
+  /* Code snippet card — a terminal surface, so it keeps its own dark palette in
+     both themes the way an editor keeps its scheme. Declared here rather than
+     inlined so a custom palette can reach it. */
+  --code-bg:            #11161f;
+  --code-bg-header:     #18212d;
+  --code-bg-button:     #202b38;
+  --code-bg-confirm:    #263d35;
+  --code-border:        #2d3745;
+  --code-border-button: #3e4d60;
+  --code-text:          #d8dee9;
+  --code-text-dim:      #aeb9c7;
+  --code-gutter:        #596779;
+  --code-keyword:       #86b7ff;
+  --code-string:        #9fda95;
+  --code-number:        #e6bd8a;
+  --code-comment:       #7d899a;
+  --code-alert:         #f07f7f;
+
+  /* Typography */
+  --font-display: 'Inter', 'DM Sans', sans-serif;
+  --font-body:    'Inter', 'DM Sans', sans-serif;
+  --font-mono:    'JetBrains Mono', monospace;
+
+  /* Rhythm — the scale components snap to.
+     Before these existed, 61 components improvised: 9 border radii, 10 font
+     sizes, 11 gap values and 39 distinct padding strings, so nothing quite
+     lined up with anything else. */
+  --radius-sm: 3px;   /* controls, chips, inputs */
+  --radius-md: 5px;   /* panels, cards */
+  --radius-lg: 8px;   /* modals, floating surfaces */
+
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 12px;
+  --space-6: 16px;
+
+  --text-xs: 9px;     /* mono metadata, badges */
+  --text-sm: 10px;    /* dense controls */
+  --text-md: 11px;    /* default UI body */
+  --text-base: 12px;  /* readable body, dialogs */
+  --text-lg: 14px;    /* panel titles */
+  --text-xl: 16px;    /* modal headings */
+
+  /* Layout */
+  --archive-rail-w: 208px;
+  --sidebar-right-w: 208px;
+  --command-spine-w: 54px;
+  --topbar-h: 40px;
+
+  /* Z-index scale */
+  --z-ui:     10;
+  --z-panels: 20;
+  --z-modal:  100;
+
+  /* Shadows */
+  --shadow-md: 0 12px 28px rgba(6, 4, 2, 0.42);
+  --shadow-lg: 0 20px 48px rgba(6, 4, 2, 0.56);
+  --shadow-inset: inset 0 1px 0 rgba(255, 246, 231, 0.035);
+
+  /* Motion */
+  --transition-fast: 140ms cubic-bezier(0.2, 0.75, 0.25, 1);
+  --transition-med: 220ms cubic-bezier(0.2, 0.75, 0.25, 1);
+  --motion-enter: 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-toast: 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ── Global Reset ──────────────────────────────────────────────────────────── */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+/* Electron's native window opacity is not implemented on Linux. When main
+   selects its transparent-host fallback, alpha on the renderer exposes the app
+   beneath without changing the Windows/macOS native behaviour. */
+html[data-window-opacity-fallback='true'],
+html[data-window-opacity-fallback='true'] body {
+  background: transparent;
+}
+
+html[data-window-opacity-fallback='true'] #root {
+  opacity: var(--window-overlay-opacity, 1);
+  /* The host window and body are transparent here, so #root is the only thing
+     painting the app at all: anything that moves a child, like the HyperType
+     shake translating the canvas by a few pixels, would otherwise open a strip
+     of bare desktop at the window edge. The alpha above still applies to this
+     fill, so window opacity keeps working and 1.0 is genuinely opaque. */
+  background: var(--bg-canvas);
+}
+
+a {
+  color: var(--text-accent);
+  text-decoration: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast), opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+button:not(:disabled):active {
+  transform: translateY(1px) scale(0.985);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+button:disabled,
+button[disabled] {
+  filter: saturate(0.72);
+}
+
+::selection {
+  background: rgba(184, 194, 189, 0.26);
+  color: var(--text-primary);
+}
+
+/* ── Scrollbars (Chromium / Electron) ─────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-ui);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* A compact, product-like motion language. These moves establish where a
+   transient surface came from and acknowledge an action; they never loop or
+   decorate the canvas. Components opt in with a class rather than inheriting
+   animation accidentally. */
+@keyframes citadel-surface-enter {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes citadel-toast-enter {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.citadel-motion-surface {
+  animation: citadel-surface-enter var(--motion-enter) both;
+  will-change: transform, opacity;
+}
+
+.citadel-motion-toast {
+  animation: citadel-toast-enter var(--motion-toast) both;
+  will-change: transform, opacity;
+}
+
+.citadel-dom-item[data-dragging='true'] {
+  filter: drop-shadow(0 10px 18px color-mix(in srgb, var(--accent) 20%, transparent));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+/* ── The click-through Stop window ──────────────────────────────────────────
+   Its own BrowserWindow, so it styles a whole document rather than a panel
+   floating in one. Frameless and sized to its content by the main process. */
+html[data-window='stop'],
+html[data-window='stop'] body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  cursor: default;
+  user-select: none;
+}
+
+.stop-shell {
+  box-sizing: border-box;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 8px 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  font-family: var(--font-body);
+  font-size: var(--text-md);
+  color: var(--text-primary);
+}
+
+.stop-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+.stop-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.stop-hint {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+}
+
+.stop-shell button {
+  margin-left: auto;
+  padding: 4px 10px;
+  background: var(--bg-ui);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+
+.stop-shell button:hover {
+  border-color: var(--accent);
+  color: var(--text-accent);
+}

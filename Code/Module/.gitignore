@@ -1,0 +1,23 @@
+node_modules/
+out/
+Output/
+dist/
+.DS_Store
+*.log
+*.local
+Thumbs.db
+.superpowers/
+*.tsbuildinfo
+playwright-report/
+test-results/
+reports/
+dist-packs/
+dist-ci/
+dist-release/
+
+# The transcription engine is fetched by scripts/fetchWhisperEngine.mjs, not
+# committed: it is platform specific and several megabytes. The README stays.
+resources/whisper/*
+!resources/whisper/README.md
+dist-demo/
+Citadel-browser-demo.zip

@@ -1,0 +1,53 @@
+import React from 'react'
+import { useArchiveProgressStore } from './archiveProgressStore'
+
+// Full-screen veil shown while a .citadelz archive is being unsealed (import)
+// or sealed (export). Blocks all interaction beneath it; not cancellable.
+export function ArchiveRiteOverlay(): React.ReactElement | null {
+  const rite = useArchiveProgressStore((s) => s.rite)
+  if (!rite) return null
+
+  const title = rite.op === 'import' ? 'Importing archive…' : 'Exporting archive…'
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 'var(--z-panels)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'color-mix(in srgb, var(--bg-canvas) 78%, transparent)',
+        backdropFilter: 'blur(2px)',
+      }}
+    >
+      <div
+        style={{
+          background: 'var(--bg-panel)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-md)',
+          boxShadow: 'var(--shadow-md)',
+          minWidth: 320,
+          padding: '22px 28px',
+          textAlign: 'center',
+        }}
+      >
+        <div style={{ color: 'var(--text-accent)', fontFamily: 'var(--font-display)', fontSize: 'var(--text-xl)', letterSpacing: '0.06em', marginBottom: 14 }}>
+          {title}
+        </div>
+        <div style={{ background: 'var(--bg-ui)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', height: 8, overflow: 'hidden' }}>
+          <div
+            style={{ background: 'var(--text-accent)', height: '100%', width: `${rite.percent}%` }}
+          />
+        </div>
+        <div style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-body)', fontSize: 'var(--text-md)', marginTop: 10, opacity: 0.8 }}>
+          {rite.percent}%{rite.label ? ` — ${rite.label}` : ''}
+        </div>
+      </div>
+    </div>
+  )
+}

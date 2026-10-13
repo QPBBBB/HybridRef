@@ -1,0 +1,574 @@
+import React, { useEffect, useRef, useState } from 'react'
+import { nanoid } from 'nanoid'
+import { useUIStore } from '../store/uiStore'
+import { useCanvasStore } from '../store/canvasStore'
+import { useHistoryStore } from '../store/historyStore'
+import type { ActionName, CanvasItem, ToolMode } from '../../types'
+import { Actions } from '../keybinds/actions'
+import { resolver } from '../keybinds/keybindResolver'
+import { shortcutHint } from '../keybinds/shortcutHint'
+import { ToolIcon, type ToolIconName } from './icons/ToolIcon'
+import { activeArchiveRailWidth } from './shell/shellModel'
+import { inscribe } from './toasts/inscriptionToastStore'
+import { startSourceCapture } from './sourceCapture'
+
+type ToolDef = { mode: ToolMode; label: string; action: ActionName | null; icon: ToolIconName }
+
+/** `Select (V)` — the key half comes from the keybind map, never from here. */
+function toolTitle({ label, action }: ToolDef): string {
+  return action ? `${label}${shortcutHint(action)}` : label
+}
+
+function contextRailWidth(): number {
+  const expandedRailWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-right-w') || '228')
+  return activeArchiveRailWidth(useUIStore.getState().archiveRailCollapsed, expandedRailWidth)
+}
+
+const PRIMARY_TOOLS: ToolDef[] = [
+  { mode: 'select', label: 'Select', action: Actions.TOOL_SELECT, icon: 'select' },
+  { mode: 'pan', label: 'Pan', action: Actions.TOOL_PAN, icon: 'pan' },
+  { mode: 'lasso', label: 'Lasso', action: Actions.TOOL_LASSO, icon: 'lasso' },
+  { mode: 'connect', label: 'Connect', action: Actions.TOOL_CONNECT, icon: 'connect' },
+  { mode: 'text', label: 'Text', action: Actions.TOOL_TEXT, icon: 'text' },
+  { mode: 'code', label: 'Code snippet', action: Actions.TOOL_CODE, icon: 'code' },
+  { mode: 'sticky', label: 'Note', action: Actions.TOOL_STICKY, icon: 'sticky' },
+]
+
+const SPECIALIST_TOOLS: ToolDef[] = [
+  { mode: 'link', label: 'Link', action: Actions.TOOL_LINK, icon: 'link' },
+  { mode: 'swatch', label: 'Swatch', action: Actions.TOOL_SWATCH, icon: 'swatch' },
+  { mode: 'tag', label: 'Tag', action: Actions.TOOL_TAG, icon: 'tag' },
+  { mode: 'comparison' as ToolMode, label: 'Comparison', action: Actions.TOOL_COMPARISON, icon: 'comparison' },
+]
+
+export function Toolbar(): React.ReactElement {
+  const toolMode = useUIStore((s) => s.toolMode)
+  const setToolMode = useUIStore((s) => s.setToolMode)
+  const selectedIds = useCanvasStore((s) => s.selectedIds)
+  const allItems = useCanvasStore((s) => s.items())
+  const isRecording = useHistoryStore((s) => s.isRecording)
+  const startRecording = useHistoryStore((s) => s.startRecording)
+  const stopRecording = useHistoryStore((s) => s.stopRecording)
+  const saveRecording = useHistoryStore((s) => s.saveRecording)
+  const snapToGrid = useUIStore((s) => s.snapToGrid)
+  const toggleSnapToGrid = useUIStore((s) => s.toggleSnapToGrid)
+
+  const [youtubeOpen, setYoutubeOpen] = useState(false)
+  const [youtubeUrl, setYoutubeUrl] = useState('')
+  const [youtubeError, setYoutubeError] = useState(false)
+  const [voiceRecording, setVoiceRecording] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
+  const toolbarRef = useRef<HTMLDivElement>(null)
+  const voiceRecorderRef = useRef<MediaRecorder | null>(null)
+  const voiceStreamRef = useRef<MediaStream | null>(null)
+  const voiceChunksRef = useRef<Blob[]>([])
+
+  const isValidYouTubeUrl = (url: string): boolean =>
+    url.includes('youtube.com') || url.includes('youtu.be')
+
+  const closeYouTube = () => {
+    setYoutubeOpen(false)
+    setYoutubeUrl('')
+    setYoutubeError(false)
+  }
+
+  useEffect(() => {
+    if (!moreOpen) return
+    const closeOnOutsidePress = (event: MouseEvent) => {
+      if (toolbarRef.current?.contains(event.target as Node)) return
+      setMoreOpen(false)
+    }
+    window.addEventListener('mousedown', closeOnOutsidePress)
+    return () => window.removeEventListener('mousedown', closeOnOutsidePress)
+  }, [moreOpen])
+
+  const placeYouTube = () => {
+    const url = youtubeUrl.trim()
+    if (!url) return
+    if (!isValidYouTubeUrl(url)) {
+      setYoutubeError(true)
+      return
+    }
+    const vp = useCanvasStore.getState().viewport()
+    const sidebarW = contextRailWidth()
+    const canvasW = window.innerWidth - sidebarW
+    const cx = (canvasW / 2 - vp.x) / vp.scale
+    const cy = (window.innerHeight / 2 - vp.y) / vp.scale
+    const boardId = useCanvasStore.getState().activeBoardId
+    if (!boardId) return
+    const item = {
+      id: nanoid(),
+      type: 'youtube' as const,
+      x: cx - 240, y: cy - 135,
+      width: 480, height: 270,
+      rotation: 0, zIndex: Date.now(),
+      locked: false, visible: true, opacity: 1,
+      tags: [], src: url, meta: {},
+    }
+    useCanvasStore.getState().addItem(boardId, item)
+    useHistoryStore.getState().push('ITEM_ADD', boardId, null, item)
+    useCanvasStore.getState().setSelection([item.id])
+    useUIStore.getState().setToolMode('select')
+    closeYouTube()
+    setMoreOpen(false)
+  }
+
+  const blobToDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(blob)
+  })
+
+  const addVoiceMemo = async (blob: Blob): Promise<void> => {
+    const boardId = useCanvasStore.getState().activeBoardId
+    if (!boardId) return
+    const dataUrl = await blobToDataUrl(blob)
+    const ipc = (window as unknown as { ipc: { invoke: (ch: string, args: unknown) => Promise<unknown> } }).ipc
+    const result = await ipc.invoke('assets:saveDataUrl', {
+      dataUrl,
+      filename: `voice-memo-${Date.now()}.webm`,
+    }) as { path?: string }
+    if (!result.path) return
+
+    const vp = useCanvasStore.getState().viewport()
+    const sidebarW = contextRailWidth()
+    const canvasW = window.innerWidth - sidebarW
+    const cx = (canvasW / 2 - vp.x) / vp.scale
+    const cy = (window.innerHeight / 2 - vp.y) / vp.scale
+    const item: CanvasItem = {
+      id: nanoid(),
+      type: 'audio',
+      x: cx - 160,
+      y: cy - 40,
+      width: 320,
+      height: 80,
+      rotation: 0,
+      zIndex: Date.now(),
+      locked: false,
+      visible: true,
+      opacity: 1,
+      tags: ['voice'],
+      src: result.path,
+      meta: { memo: true, recordedAt: Date.now() },
+    }
+    useCanvasStore.getState().addItem(boardId, item)
+    useHistoryStore.getState().push('ITEM_ADD', boardId, null, item)
+    useCanvasStore.getState().setSelection([item.id])
+  }
+
+  const stopVoiceMemo = () => {
+    voiceRecorderRef.current?.stop()
+  }
+
+  const startVoiceMemo = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const recorder = new MediaRecorder(stream)
+      voiceChunksRef.current = []
+      voiceStreamRef.current = stream
+      voiceRecorderRef.current = recorder
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) voiceChunksRef.current.push(event.data)
+      }
+      recorder.onstop = () => {
+        setVoiceRecording(false)
+        voiceStreamRef.current?.getTracks().forEach((track) => track.stop())
+        voiceStreamRef.current = null
+        voiceRecorderRef.current = null
+        const blob = new Blob(voiceChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+        voiceChunksRef.current = []
+        if (blob.size > 0) addVoiceMemo(blob).catch(console.error)
+      }
+      recorder.start()
+      setVoiceRecording(true)
+    } catch (error) {
+      console.error('Voice memo recording failed:', error)
+      inscribe('Could not start the voice memo', { tone: 'danger' })
+    }
+  }
+
+  const SRC_TYPES = new Set(['image', 'gif', 'video'])
+  const mergeSelectedToCompare = () => {
+    const { activeBoardId, items, removeItems, addItem, setSelection } = useCanvasStore.getState()
+    if (!activeBoardId || selectedIds.length !== 2) return
+    const sel = items().filter((i) => selectedIds.includes(i.id))
+    if (sel.length !== 2 || sel.some((i) => !i.src)) return
+    const [a, b] = sel.sort((x, y) => x.x - y.x)
+    const minX = Math.min(a.x, b.x)
+    const minY = Math.min(a.y, b.y)
+    const maxX = Math.max(a.x + a.width, b.x + b.width)
+    const maxY = Math.max(a.y + a.height, b.y + b.height)
+    const compare: CanvasItem = {
+      id: nanoid(),
+      type: 'comparison',
+      x: minX, y: minY,
+      width: maxX - minX, height: maxY - minY,
+      rotation: 0, zIndex: Math.max(a.zIndex, b.zIndex),
+      locked: false, visible: true, opacity: 1, tags: [],
+      meta: { srcA: a.src, srcB: b.src, splitX: 0.5 },
+    }
+    useHistoryStore.getState().push('COMPARE_MERGE', activeBoardId, { items: [a, b] }, compare)
+    removeItems(activeBoardId, selectedIds)
+    addItem(activeBoardId, compare)
+    setSelection([compare.id])
+    setToolMode('select')
+  }
+
+  const canMergeToCompare = selectedIds.length === 2 &&
+    allItems.filter((i) => selectedIds.includes(i.id)).every((i) => SRC_TYPES.has(i.type) && !!i.src)
+  const canAutoArrange = allItems.filter((item) => selectedIds.includes(item.id) && !item.locked).length >= 2
+  const hasSpecialistToolActive = SPECIALIST_TOOLS.some((tool) => tool.mode === toolMode)
+
+  const handleRecord = () => {
+    if (isRecording) {
+      const session = stopRecording()
+      if (session) saveRecording(session)
+    } else {
+      startRecording(`Recording ${new Date().toLocaleTimeString()}`)
+    }
+  }
+
+  return (
+    <div
+      className="citadel-toolbar"
+      ref={toolbarRef}
+      style={{
+        position: 'absolute',
+        top: 48,
+        left: 12,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-2)',
+        background: 'var(--bg-panel)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius-md)',
+        padding: '6px 4px',
+        zIndex: 'var(--z-ui)',
+        boxShadow: 'var(--shadow-md)',
+      }}
+    >
+      {PRIMARY_TOOLS.map((tool) => {
+        const { mode, icon } = tool
+        const isMergeMode = mode === 'comparison' && canMergeToCompare
+        const title = isMergeMode ? 'Merge to Compare item' : toolTitle(tool)
+        return (
+        <button
+          key={mode}
+          type="button"
+          title={title}
+          aria-label={title}
+          aria-pressed={toolMode === mode}
+          onClick={() => {
+            if (isMergeMode) mergeSelectedToCompare()
+            else setToolMode(mode)
+            setMoreOpen(false)
+          }}
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 'var(--radius-sm)',
+            border: isMergeMode ? '1.5px solid var(--accent)' : 'none',
+            cursor: 'pointer',
+            background: toolMode === mode ? 'var(--accent)' : 'transparent',
+            color: toolMode === mode ? 'var(--bg-ui)' : isMergeMode ? 'var(--accent)' : 'var(--text-secondary)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            transition: 'var(--transition-fast)',
+          }}
+        >
+          <ToolIcon name={icon} />
+        </button>
+        )
+      })}
+
+      <div style={{ height: 1, background: 'var(--border)', margin: '2px 4px' }} />
+
+      <div className="citadel-toolbar-overflow">
+        <button
+          type="button"
+          className="citadel-toolbar-overflow-trigger"
+          title="More tools"
+          aria-label="More tools"
+          aria-expanded={moreOpen}
+          onClick={() => setMoreOpen((open) => !open)}
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 'var(--radius-sm)',
+            border: hasSpecialistToolActive || moreOpen ? '1px solid var(--accent)' : 'none',
+            cursor: 'pointer',
+            background: moreOpen ? 'var(--bg-hover)' : 'transparent',
+            color: hasSpecialistToolActive || moreOpen ? 'var(--accent)' : 'var(--text-secondary)',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 'var(--text-xl)',
+            lineHeight: 1,
+          }}
+        >
+          ···
+        </button>
+
+        {moreOpen && (
+          <div className="citadel-toolbar-overflow-menu">
+            {SPECIALIST_TOOLS.map((tool) => {
+              const { mode, icon } = tool
+              const isMergeMode = mode === 'comparison' && canMergeToCompare
+              const title = isMergeMode ? 'Merge to Compare item' : toolTitle(tool)
+              return (
+                <button
+                  key={mode}
+                  title={title}
+                  aria-label={title}
+                  aria-pressed={toolMode === mode}
+                  onClick={() => {
+                    if (isMergeMode) mergeSelectedToCompare()
+                    else setToolMode(mode)
+                    setMoreOpen(false)
+                  }}
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 'var(--radius-sm)',
+                    border: isMergeMode ? '1.5px solid var(--accent)' : 'none',
+                    cursor: 'pointer',
+                    background: toolMode === mode ? 'var(--accent)' : 'transparent',
+                    color: toolMode === mode ? 'var(--bg-ui)' : isMergeMode ? 'var(--accent)' : 'var(--text-secondary)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    transition: 'var(--transition-fast)',
+                  }}
+                >
+                  <ToolIcon name={icon} />
+                </button>
+              )
+            })}
+
+            <button
+              type="button"
+              title="Capture from source"
+              aria-label="Capture from source"
+              onClick={() => {
+                const source = useCanvasStore.getState().selectedItems().find((item) => !!item.src)
+                void startSourceCapture(source)
+                setMoreOpen(false)
+              }}
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 'var(--radius-sm)',
+                border: 'none',
+                cursor: 'pointer',
+                background: 'transparent',
+                color: 'var(--text-secondary)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <ToolIcon name="edit" />
+            </button>
+
+      {/* ── YouTube ── */}
+      <button
+        title="YouTube Embed (paste URL)"
+        aria-label="YouTube Embed (paste URL)"
+        aria-expanded={youtubeOpen}
+        onClick={() => youtubeOpen ? closeYouTube() : setYoutubeOpen(true)}
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 'var(--radius-sm)',
+          border: 'none',
+          cursor: 'pointer',
+          background: youtubeOpen ? 'var(--accent)' : 'transparent',
+          color: youtubeOpen ? 'var(--bg-ui)' : 'var(--text-secondary)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'var(--transition-fast)',
+        }}
+      >
+        <ToolIcon name="youtube" />
+      </button>
+
+      {youtubeOpen && (
+        <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', padding: '2px 2px 4px' }}>
+          <input
+            autoFocus
+            value={youtubeUrl}
+            onChange={(e) => { setYoutubeUrl(e.target.value); setYoutubeError(false) }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') placeYouTube()
+              if (e.key === 'Escape') closeYouTube()
+            }}
+            placeholder="youtube.com/watch?v=…"
+            style={{
+              width: 148,
+              background: 'var(--bg-ui)',
+              border: `1px solid ${youtubeError ? 'var(--accent-danger)' : 'var(--border)'}`,
+              borderRadius: 'var(--radius-sm)',
+              color: 'var(--text-primary)',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 'var(--text-xs)',
+              padding: '4px 6px',
+              outline: 'none',
+              boxSizing: 'border-box',
+            }}
+          />
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', textAlign: 'center' }}>
+            Enter to place · Esc to cancel
+          </span>
+        </div>
+      )}
+
+      <button
+        title={`Snap to Grid${shortcutHint(Actions.TOGGLE_SNAP)} — ${snapToGrid ? 'On' : 'Off'}`}
+        aria-label={`Snap to Grid${shortcutHint(Actions.TOGGLE_SNAP)} — ${snapToGrid ? 'On' : 'Off'}`}
+        aria-pressed={snapToGrid}
+        onClick={toggleSnapToGrid}
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 'var(--radius-sm)',
+          border: 'none',
+          cursor: 'pointer',
+          background: snapToGrid ? 'var(--accent)' : 'transparent',
+          color: snapToGrid ? 'var(--bg-ui)' : 'var(--text-secondary)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'var(--transition-fast)',
+        }}
+      >
+        <ToolIcon name="snap" />
+      </button>
+
+      <button
+        title={`Auto-arrange selection${shortcutHint(Actions.AUTO_ARRANGE)}`}
+        aria-label={`Auto-arrange selection${shortcutHint(Actions.AUTO_ARRANGE)}`}
+        onClick={() => resolver.dispatch(Actions.AUTO_ARRANGE)}
+        disabled={!canAutoArrange}
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 'var(--radius-sm)',
+          border: 'none',
+          cursor: canAutoArrange ? 'pointer' : 'not-allowed',
+          background: 'transparent',
+          color: canAutoArrange ? 'var(--text-secondary)' : 'var(--text-muted)',
+          opacity: canAutoArrange ? 1 : 0.35,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'var(--transition-fast)',
+        }}
+      >
+        <ToolIcon name="autoArrange" />
+      </button>
+
+      <div style={{ gridColumn: '1 / -1', height: 1, background: 'var(--border)', margin: '2px 4px' }} />
+
+      <button
+        title={isRecording ? 'Stop recording' : `Record the edits you make, to replay later${shortcutHint(Actions.RECORD_TOGGLE)}`}
+        aria-label={isRecording ? 'Stop recording' : `Record the edits you make, to replay later${shortcutHint(Actions.RECORD_TOGGLE)}`}
+        aria-pressed={isRecording}
+        onClick={handleRecord}
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 'var(--radius-sm)',
+          border: 'none',
+          cursor: 'pointer',
+          background: isRecording ? 'rgba(139,32,32,0.25)' : 'transparent',
+          color: isRecording ? 'var(--accent-danger)' : 'var(--text-secondary)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'var(--transition-fast)',
+        }}
+      >
+        {isRecording ? (
+          <ToolIcon name="recordStop" />
+        ) : (
+          <ToolIcon name="record" />
+        )}
+      </button>
+
+      <button
+        title={voiceRecording ? 'Stop voice memo' : 'Record voice memo'}
+        aria-label={voiceRecording ? 'Stop voice memo' : 'Record voice memo'}
+        aria-pressed={voiceRecording}
+        onClick={() => {
+          if (voiceRecording) stopVoiceMemo()
+          else startVoiceMemo().catch(console.error)
+        }}
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 'var(--radius-sm)',
+          border: 'none',
+          cursor: 'pointer',
+          background: voiceRecording ? 'rgba(139,32,32,0.25)' : 'transparent',
+          color: voiceRecording ? 'var(--accent-danger)' : 'var(--text-secondary)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'var(--transition-fast)',
+        }}
+      >
+        <ToolIcon name="voice" />
+      </button>
+
+      <div style={{ gridColumn: '1 / -1', height: 1, background: 'var(--border)', margin: '2px 4px' }} />
+
+      <button
+        title={`Presentation Mode${shortcutHint(Actions.PRESENTATION_TOGGLE)}`}
+        aria-label={`Presentation Mode${shortcutHint(Actions.PRESENTATION_TOGGLE)}`}
+        onClick={() => resolver.dispatch(Actions.PRESENTATION_TOGGLE)}
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 'var(--radius-sm)',
+          border: 'none',
+          cursor: 'pointer',
+          background: 'transparent',
+          color: 'var(--text-secondary)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'var(--transition-fast)',
+        }}
+      >
+        <ToolIcon name="presentation" />
+      </button>
+
+      <div style={{ gridColumn: '1 / -1', height: 1, background: 'var(--border)', margin: '2px 4px' }} />
+
+      <button
+        title="Settings"
+        aria-label="Settings"
+        onClick={() => useUIStore.getState().openPanel('keybindSettings')}
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 'var(--radius-sm)',
+          border: 'none',
+          cursor: 'pointer',
+          background: 'transparent',
+          color: 'var(--text-secondary)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'var(--transition-fast)',
+        }}
+      >
+        <ToolIcon name="theme" />
+      </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

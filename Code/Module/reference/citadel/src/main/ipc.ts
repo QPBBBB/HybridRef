@@ -1,0 +1,836 @@
+import { ipcMain, dialog, shell, app, clipboard, nativeImage, BrowserWindow, globalShortcut } from 'electron'
+import { copyFileSync, existsSync, mkdirSync, promises as fsp, readFileSync, readdirSync, statSync, writeFileSync } from 'fs'
+import { basename, dirname, extname, isAbsolute, join, resolve } from 'path'
+import { randomUUID } from 'crypto'
+import JSZip from 'jszip'
+import { createProgressThrottle, extractCitadelZip, inspectCitadelZip } from './archiveZip'
+import { parseDataUrl } from './dataUrl'
+import { isExternallyOpenable } from './externalLinks'
+import type { PortableProject } from './projectPersistence'
+import {
+  isCitadelArchivePath,
+  isUrlLikeSrc,
+  readCitadelProject,
+  toJsonPath,
+  uniqueAssetPath,
+  writeCitadelProject,
+} from './projectPersistence'
+import { projectAssetPaths, visitProjectAssetPaths } from '../types/projectAssetPaths'
+import { isHbrProjectPath, readHbrProject, writeHbrProject } from './hbrPersistence'
+import { extractDocumentText } from './documentText'
+import { resolveEngine, transcribeAudio } from './transcription'
+import { fontsDirFor, listFonts, listSnippets, readFont, snippetsDirFor } from './userStyles'
+import {
+  APPEARANCE_SETTINGS_KEYS,
+  normalizeEnabledSnippets,
+  normalizeFontChoices,
+} from '../types/appearance'
+import {
+  abortModelDownload,
+  downloadModel,
+  listInstalledModels,
+  modelsDirFor,
+  readModelChoice,
+  removeModel,
+  resolveModelFile,
+} from './transcriptionModels'
+import { TRANSCRIPTION_SETTINGS_KEYS } from '../types/transcription'
+import type { TranscriptionProgress, TranscriptionRequest, TranscriptionResult } from '../types/transcription'
+import { clearUnusedPreviews, getPreviewCacheStats, statSource, thumbnailFilename, writePreviewPng } from './previewCache'
+import { getManySettings, readSettingsFile, setManySettings, writeSettingsFile } from './settingsStore'
+import {
+  CLICK_THROUGH_SHORTCUT,
+  defaultWindowMode,
+  nextWindowMode,
+  usesRendererOpacityFallback,
+  type WindowModeRequest,
+  type WindowModeState,
+} from './windowModes'
+import { closeStopWindow, isStopWindow, openStopWindow, stopWindowInstance, stopWindowOwner } from './stopWindow'
+import { windowModeTarget } from './stopWindowLayout'
+import { buildMenu } from './menu'
+
+// Live window mode. Click-through is deliberately absent from settings.json.
+let windowMode: WindowModeState = { ...defaultWindowMode }
+const internalClipboardFormat = 'hybridref/canvas-items'
+const internalClipboardToken = Buffer.from(randomUUID())
+
+// Click-through has no watcher any more: the Stop control is its own window,
+// which simply never ignores the mouse. See stopWindow.ts for why.
+export function stopClickThroughWatch(): void {
+  closeStopWindow()
+}
+
+// Settings store (simple JSON file in userData)
+const settingsPath = join(app.getPath('userData'), 'settings.json')
+const keybindsPath = join(app.getPath('userData'), 'keybinds.json')
+const pdfCacheDir = (): string => join(app.getPath('userData'), 'pdf-cache')
+const previewCacheDir = (): string => join(app.getPath('userData'), 'preview-cache')
+// New previews are written to preview-cache; legacy pdf-cache is read and cleaned only.
+const previewCacheDirs = (): string[] => [previewCacheDir(), pdfCacheDir()]
+// Transcription weights are downloaded, never bundled, so they live in userData
+// beside the caches rather than in the read-only install directory.
+const transcriptionModelsDir = (): string => modelsDirFor(app.getPath('userData'))
+// The recogniser itself does ship, from resources/ in a packaged app and from
+// the repo's own resources/ in dev.
+const bundledResourcesDir = (): string => (app.isPackaged ? process.resourcesPath : join(app.getAppPath(), '..', 'Resource'))
+// One transcription per window. Starting a second cancels the first rather than
+// letting two recognisers fight over the same cores.
+const activeTranscriptions = new Map<number, AbortController>()
+// A person's own stylesheets and fonts live beside their settings, never in a
+// project: a .citadel file that could carry CSS could restyle someone else's app.
+const userSnippetsDir = (): string => snippetsDirFor(app.getPath('userData'))
+const userFontsDir = (): string => fontsDirFor(app.getPath('userData'))
+function readSettings(): Record<string, unknown> {
+  return readSettingsFile(settingsPath)
+}
+function writeSettings(data: Record<string, unknown>): void {
+  writeSettingsFile(settingsPath, data)
+}
+
+function scanFilesByBasename(root: string): { byName: Map<string, string>; scanned: number } {
+  const byName = new Map<string, string>()
+  let scanned = 0
+  const visit = (dir: string): void => {
+    for (const entry of readdirSync(dir)) {
+      const path = join(dir, entry)
+      try {
+        const stat = statSync(path)
+        if (stat.isDirectory()) {
+          visit(path)
+        } else if (stat.isFile()) {
+          scanned += 1
+          const key = basename(path).toLowerCase()
+          if (!byName.has(key)) byName.set(key, path)
+        }
+      } catch { /* skip unreadable files */ }
+    }
+  }
+  visit(root)
+  return { byName, scanned }
+}
+
+type ZipAsset = { sourcePath: string; zipPath: string }
+
+function prepareZipProject(projectJson: string, assetPaths: string[]): { projectJson: string; assets: ZipAsset[] } {
+  const project = JSON.parse(projectJson) as PortableProject
+  const knownAssets = new Set(assetPaths)
+  const used = new Set<string>()
+  const assets: ZipAsset[] = []
+  const copiedPaths = new Map<string, string>()
+
+  visitProjectAssetPaths(project, (src, replace) => {
+    if (isUrlLikeSrc(src)) return
+    const sourcePath = isAbsolute(src) ? src : resolve(src)
+    if (!knownAssets.has(src) && !knownAssets.has(sourcePath)) return
+    if (!existsSync(sourcePath)) return
+    const copied = copiedPaths.get(sourcePath)
+    if (copied) { replace(copied); return }
+
+    const asset = uniqueAssetPath('', used, sourcePath)
+    const zipPath = toJsonPath(join('assets', asset.filename))
+    assets.push({ sourcePath, zipPath })
+    copiedPaths.set(sourcePath, zipPath)
+    replace(zipPath)
+  })
+
+  return { projectJson: JSON.stringify(project, null, 2), assets }
+}
+
+async function writeZipProject(
+  filePath: string,
+  projectJson: string,
+  assetPaths: string[],
+  onPercent?: (percent: number) => void,
+): Promise<void> {
+  const prepared = prepareZipProject(projectJson, assetPaths)
+  const zip = new JSZip()
+  zip.file('project.citadel', prepared.projectJson)
+  for (const asset of prepared.assets) {
+    try {
+      zip.file(asset.zipPath, readFileSync(asset.sourcePath))
+    } catch { /* skip missing */ }
+  }
+  const buf = await zip.generateAsync(
+    { type: 'nodebuffer', compression: 'DEFLATE' },
+    (meta) => onPercent?.(meta.percent),
+  )
+  await fsp.writeFile(filePath, buf)
+}
+
+function collectProjectAssetPaths(projectJson: string): string[] {
+  const project = JSON.parse(projectJson) as PortableProject
+  return projectAssetPaths(project).filter((src) => !isUrlLikeSrc(src))
+}
+
+function resolveImportedZipProject(projectJson: string, assetDir: string): string {
+  const project = JSON.parse(projectJson) as PortableProject
+
+  visitProjectAssetPaths(project, (src, replace) => {
+    if (isUrlLikeSrc(src) || isAbsolute(src)) return
+    replace(resolve(assetDir, src.replace(/^assets[\\/]/i, '')))
+  })
+
+  return JSON.stringify(project, null, 2)
+}
+
+function writeDataUrlAsset(dataUrl: string, filename: string): { path: string } {
+  const parsed = parseDataUrl(dataUrl)
+  if (!parsed) throw new Error('Unsupported asset data')
+  const ext = parsed.extension
+  const assetDir = join(app.getPath('userData'), 'captured-assets')
+  if (!existsSync(assetDir)) mkdirSync(assetDir, { recursive: true })
+  const safeBase = filename
+    .replace(/\.[a-z0-9]+$/i, '')
+    .replace(/[^a-z0-9_-]+/gi, '-')
+    .replace(/^-+|-+$/g, '') || 'capture'
+  const used = new Set(readdirSync(assetDir).map((entry) => entry.toLowerCase()))
+  const asset = uniqueAssetPath(assetDir, used, `${safeBase}.${ext}`)
+  writeFileSync(asset.path, parsed.bytes)
+  return { path: asset.path }
+}
+
+export function registerIpcHandlers(): void {
+
+  ipcMain.handle('clipboard:editText', (event, { action }: { action: string }) => {
+    if (action !== 'copy' && action !== 'cut' && action !== 'paste') return { ok: false }
+    event.sender[action]()
+    return { ok: true }
+  })
+
+  ipcMain.handle('clipboard:markInternal', () => {
+    clipboard.clear()
+    clipboard.writeBuffer(internalClipboardFormat, internalClipboardToken)
+    return { ok: true }
+  })
+  ipcMain.handle('clipboard:readImage', () => {
+    const internal = clipboard.readBuffer(internalClipboardFormat).equals(internalClipboardToken)
+    const image = clipboard.readImage()
+    if (image.isEmpty()) return { internal, imageData: null, width: 0, height: 0 }
+    return { internal, imageData: image.toDataURL(), ...image.getSize() }
+  })
+
+  ipcMain.handle('file:startupProject', () => {
+    const candidate = process.env.HYBRIDREF_PROJECT
+      || process.argv.slice(1).find((arg) => /\.(hbr|citadel|citadelz)$/i.test(arg))
+    return { path: candidate ? resolve(candidate) : null }
+  })
+
+  // ── file:save ──────────────────────────────────────────────────────────────
+  ipcMain.handle('file:save', async (_e, { path, data }: { path: string; data: string }) => {
+    if (isHbrProjectPath(path)) {
+      const result = await writeHbrProject(path, data)
+      return { ok: true, ...result, data: readHbrProject(path) }
+    }
+    if (isCitadelArchivePath(path)) {
+      await writeZipProject(path, data, collectProjectAssetPaths(data))
+      return { ok: true }
+    }
+
+    writeCitadelProject(path, data)
+    return { ok: true }
+  })
+
+  // ── file:load ──────────────────────────────────────────────────────────────
+  ipcMain.handle('file:load', async (_e, { path }: { path: string }) => {
+    return { data: isHbrProjectPath(path) ? readHbrProject(path) : readCitadelProject(path) }
+  })
+
+  // ── file:saveDialog ────────────────────────────────────────────────────────
+  ipcMain.handle('file:saveDialog', async (_e, { defaultName = 'Untitled.hbr', filters }: { defaultName?: string; filters?: Electron.FileFilter[] } = {}) => {
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      defaultPath: defaultName,
+      filters: filters ?? [
+        { name: 'HybridRef Project (YAML)', extensions: ['hbr'] },
+        { name: 'Citadel Project', extensions: ['citadel'] },
+        { name: 'Citadel Archive', extensions: ['citadelz'] },
+      ],
+    })
+    return { path: canceled ? null : filePath }
+  })
+
+  // ── assets:scanFolder ─ pick a folder and list its media files ─────────────
+  const MEDIA_EXTENSIONS = new Set([
+    'png', 'jpg', 'jpeg', 'webp', 'bmp', 'svg', 'gif',
+    'mp4', 'webm', 'mov', 'mkv', 'mp3', 'wav', 'ogg', 'flac',
+    'glb', 'gltf', 'obj',
+  ])
+  const SCAN_MAX_FILES = 500
+  const SCAN_MAX_DEPTH = 3
+  ipcMain.handle('assets:scanFolder', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({ properties: ['openDirectory'] })
+    if (canceled || filePaths.length === 0) return { folder: null, files: [] }
+    const folder = filePaths[0]
+    const files: string[] = []
+    const visit = (dir: string, depth: number): void => {
+      if (files.length >= SCAN_MAX_FILES || depth > SCAN_MAX_DEPTH) return
+      let entries: string[] = []
+      try {
+        entries = readdirSync(dir)
+      } catch {
+        return
+      }
+      for (const entry of entries) {
+        if (files.length >= SCAN_MAX_FILES) return
+        const path = join(dir, entry)
+        try {
+          const stat = statSync(path)
+          if (stat.isDirectory()) {
+            visit(path, depth + 1)
+          } else if (stat.isFile()) {
+            const extension = extname(entry).slice(1).toLowerCase()
+            if (MEDIA_EXTENSIONS.has(extension)) files.push(path)
+          }
+        } catch { /* skip unreadable entries */ }
+      }
+    }
+    visit(folder, 0)
+    return { folder, files }
+  })
+
+  // ── assets:exportCopy ─ copy a relic's source file to a user-chosen path ───
+  ipcMain.handle('assets:exportCopy', async (_e, { sourcePath, targetPath }: { sourcePath: string; targetPath: string }) => {
+    if (!sourcePath || !targetPath || !existsSync(sourcePath)) return { ok: false }
+    try {
+      copyFileSync(sourcePath, targetPath)
+      return { ok: true }
+    } catch {
+      return { ok: false }
+    }
+  })
+
+  // ── file:openDialog ────────────────────────────────────────────────────────
+  ipcMain.handle('file:openDialog', async (_e, { filters }: { filters?: Electron.FileFilter[] } = {}) => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      filters: filters ?? [
+        { name: 'HybridRef / Citadel Projects', extensions: ['hbr', 'citadel', 'citadelz'] },
+      ],
+      properties: ['openFile'],
+    })
+    return { path: canceled ? null : filePaths[0] }
+  })
+
+  // ── file:saveRecovery ──────────────────────────────────────────────────────
+  ipcMain.handle('file:saveRecovery', async (_e, { data }: { data: string }) => {
+    const recoveryPath = join(app.getPath('userData'), 'recovery.citadel')
+    writeFileSync(recoveryPath, data, 'utf-8')
+    return { ok: true }
+  })
+
+  // ── export:pdf ─────────────────────────────────────────────────────────────
+  ipcMain.handle('export:pdf', async (_e, { imageData, filename }: { imageData: string; filename: string }) => {
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      defaultPath: filename,
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    })
+    if (canceled || !filePath) return { ok: false }
+    const base64 = imageData.replace(/^data:application\/pdf;base64,/, '')
+    writeFileSync(filePath, Buffer.from(base64, 'base64'))
+    return { ok: true, path: filePath }
+  })
+
+  // ── export:image ───────────────────────────────────────────────────────────
+  ipcMain.handle('export:image', async (_e, { imageData, filename, format }: { imageData: string; filename: string; format: string; quality: number }) => {
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      defaultPath: filename,
+      filters: [{ name: format.toUpperCase(), extensions: [format] }],
+    })
+    if (canceled || !filePath) return { ok: false }
+    const base64 = imageData.replace(/^data:image\/[a-z]+;base64,/, '')
+    writeFileSync(filePath, Buffer.from(base64, 'base64'))
+    return { ok: true, path: filePath }
+  })
+
+  // ── export:zip ─────────────────────────────────────────────────────────────
+  ipcMain.handle('pdf:cachePageImage', async (_e, { pdfPath, page, imageData }: { pdfPath: string; page: number; imageData: string }) => {
+    const safeBase = pdfPath
+      .split(/[/\\]/)
+      .pop()
+      ?.replace(/\.pdf$/i, '')
+      .replace(/[^a-z0-9_-]+/gi, '-')
+      .replace(/^-+|-+$/g, '') || 'document'
+    const filename = `${safeBase}-page-${page}-${Date.now()}.png`
+    return { path: writePreviewPng(previewCacheDir(), filename, imageData) }
+  })
+
+  ipcMain.handle('cache:previewStats', async () => getPreviewCacheStats(previewCacheDirs()))
+
+  ipcMain.handle('cache:clearUnusedPreviews', async (_e, { preservePaths, assetPaths }: { preservePaths: string[]; assetPaths: string[] }) => {
+    const preserved = (Array.isArray(preservePaths) ? preservePaths : []).slice()
+    for (const assetPath of Array.isArray(assetPaths) ? assetPaths : []) {
+      const stat = statSource(assetPath)
+      if (stat.exists && stat.size !== undefined && stat.mtimeMs !== undefined) {
+        preserved.push(join(previewCacheDir(), thumbnailFilename(assetPath, stat.size, stat.mtimeMs)))
+      }
+    }
+    const result = clearUnusedPreviews(previewCacheDirs(), preserved)
+    return { ...result, stats: getPreviewCacheStats(previewCacheDirs()) }
+  })
+
+  ipcMain.handle('assets:getThumbnail', async (_e, { path }: { path: string }) => {
+    const stat = statSource(path)
+    if (!stat.exists || stat.size === undefined || stat.mtimeMs === undefined) {
+      return { exists: false, thumbnailPath: null }
+    }
+    const thumbnailPath = join(previewCacheDir(), thumbnailFilename(path, stat.size, stat.mtimeMs))
+    return {
+      exists: true,
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      thumbnailPath: existsSync(thumbnailPath) ? thumbnailPath : null,
+    }
+  })
+
+  ipcMain.handle('assets:cacheThumbnail', async (_e, { path, imageData }: { path: string; imageData: string }) => {
+    const stat = statSource(path)
+    if (!stat.exists || stat.size === undefined || stat.mtimeMs === undefined) {
+      throw new Error('Cannot cache thumbnail for missing source file')
+    }
+    return { thumbnailPath: writePreviewPng(previewCacheDir(), thumbnailFilename(path, stat.size, stat.mtimeMs), imageData) }
+  })
+
+  ipcMain.handle('assets:checkPaths', async (_e, { paths }: { paths: string[] }) => {
+    const uniquePaths = Array.from(new Set(Array.isArray(paths) ? paths : []))
+    const missing = uniquePaths.filter((path) => !existsSync(path))
+    return { total: uniquePaths.length, missing: missing.length, missingPaths: missing }
+  })
+
+  ipcMain.handle('assets:relinkMissing', async (_e, { missingPaths }: { missingPaths: string[] }) => {
+    const missing = Array.from(new Set(Array.isArray(missingPaths) ? missingPaths : []))
+    if (missing.length === 0) return { replacements: {}, scanned: 0 }
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: 'Choose folder to search for missing assets',
+      properties: ['openDirectory'],
+    })
+    if (canceled || !filePaths[0]) return { replacements: {}, scanned: 0 }
+
+    const { byName, scanned } = scanFilesByBasename(filePaths[0])
+    const replacements = missing.reduce<Record<string, string>>((acc, missingPath) => {
+      const match = byName.get(basename(missingPath).toLowerCase())
+      if (match) acc[missingPath] = match
+      return acc
+    }, {})
+    return { replacements, scanned }
+  })
+
+  ipcMain.handle('assets:saveDataUrl', async (_e, { dataUrl, imageData, filename }: { dataUrl?: string; imageData?: string; filename: string }) => (
+    writeDataUrlAsset(dataUrl ?? imageData ?? '', filename)
+  ))
+
+  ipcMain.handle('clipboard:writeImageDataUrl', async (_e, { imageData }: { imageData: string }) => {
+    const base64 = imageData.replace(/^data:image\/[a-z0-9+.-]+;base64,/i, '')
+    const image = nativeImage.createFromBuffer(Buffer.from(base64, 'base64'))
+    if (image.isEmpty()) return { ok: false }
+    clipboard.writeImage(image)
+    return { ok: true }
+  })
+
+  ipcMain.handle('export:zip', async (e, { projectJson, assetPaths, filename }: { projectJson: string; assetPaths: string[]; filename: string }) => {
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      defaultPath: filename,
+      filters: [{ name: 'Citadel Archive', extensions: ['citadelz'] }],
+    })
+    if (canceled || !filePath) return { ok: false }
+
+    try {
+      const sendProgress = createProgressThrottle((percent) => {
+        e.sender.send('archive:progress', { op: 'export', percent })
+      })
+      await writeZipProject(filePath, projectJson, assetPaths, sendProgress)
+      sendProgress(100)
+      return { ok: true, path: filePath }
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+  // ── import:zip ─────────────────────────────────────────────────────────────
+  ipcMain.handle('import:zip', async (e, { zipPath }: { zipPath: string }) => {
+    let assetDir: string | null = null
+    try {
+      const buf = await fsp.readFile(zipPath)
+      const zip = await JSZip.loadAsync(buf)
+      const manifest = inspectCitadelZip(zip)
+      const rawProjectJson = await manifest.project.async('string')
+      if (Buffer.byteLength(rawProjectJson) > 512 * 1024 * 1024) throw new Error('Archive project entry too large')
+
+      // Each import gets its own directory. Reusing one folder lets a later
+      // archive overwrite assets still referenced by an earlier open project.
+      assetDir = await fsp.mkdtemp(join(dirname(zipPath), '_citadel_assets-'))
+      const sendProgress = createProgressThrottle((percent) => {
+        e.sender.send('archive:progress', { op: 'import', percent })
+      })
+      await extractCitadelZip(manifest, assetDir, {
+        onProgress: ({ done, total }) => sendProgress(Math.round((done / Math.max(1, total)) * 100)),
+      })
+      sendProgress(100)
+
+      return { ok: true, projectJson: resolveImportedZipProject(rawProjectJson, assetDir), assetDir }
+    } catch (error) {
+      if (assetDir) await fsp.rm(assetDir, { recursive: true, force: true }).catch(() => {})
+      return { ok: false, reason: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+  // ── document:extractText ───────────────────────────────────────────────────
+  // Plain text out of a dropped .docx. The renderer hands over a path and gets
+  // back either text or a named reason; it never opens the file itself, and
+  // nothing here reaches past that one local file.
+  ipcMain.handle('document:extractText', async (_e, { path }: { path?: unknown } = {}) => (
+    extractDocumentText(path)
+  ))
+
+  // ── audio:transcribe ───────────────────────────────────────────────────────
+  // Samples in, words out. The renderer decodes with Web Audio because it has
+  // codecs and this side does not, which is why no ffmpeg ships. Nothing here
+  // reaches the network: the audio never leaves the machine.
+  ipcMain.handle('audio:transcribe', async (e, request: TranscriptionRequest): Promise<TranscriptionResult> => {
+    const settings = readSettings()
+
+    const model = await resolveModelFile(transcriptionModelsDir(), readModelChoice(settings))
+    if (!model.ok) return model
+
+    const enginePath = settings[TRANSCRIPTION_SETTINGS_KEYS.enginePath]
+    const engine = await resolveEngine(typeof enginePath === 'string' ? enginePath : null, bundledResourcesDir())
+    if (!engine.path) {
+      return {
+        ok: false,
+        code: 'engine-missing',
+        reason: 'The transcription engine is missing from this install. Settings can point Citadel at a whisper.cpp binary.',
+      }
+    }
+
+    activeTranscriptions.get(e.sender.id)?.abort()
+    const controller = new AbortController()
+    activeTranscriptions.set(e.sender.id, controller)
+
+    // Percent is throttled, but a change of phase is not: it is what tells a
+    // person that a long silent wait is loading weights rather than hanging.
+    let phase: TranscriptionProgress['phase'] = 'loading-model'
+    const sendPercent = createProgressThrottle((percent) => {
+      e.sender.send('transcribe:progress', { phase, percent })
+    })
+
+    try {
+      return await transcribeAudio(request, {
+        enginePath: engine.path,
+        modelPath: model.path,
+        modelId: model.modelId,
+        tempDir: app.getPath('temp'),
+        signal: controller.signal,
+        onProgress: (progress) => {
+          if (progress.phase !== phase) {
+            phase = progress.phase
+            e.sender.send('transcribe:progress', progress)
+            return
+          }
+          sendPercent(progress.percent)
+        },
+      })
+    } finally {
+      if (activeTranscriptions.get(e.sender.id) === controller) activeTranscriptions.delete(e.sender.id)
+    }
+  })
+
+  ipcMain.handle('audio:cancelTranscribe', async (e) => {
+    activeTranscriptions.get(e.sender.id)?.abort()
+    return { ok: true }
+  })
+
+  // ── transcription models ───────────────────────────────────────────────────
+  // Weights are fetched on request, from a pinned URL, and installed only if
+  // they hash to the pinned digest. Anyone who already has a model file can
+  // point at it instead and nothing is downloaded at all.
+  ipcMain.handle('transcription:models', async () => {
+    const settings = readSettings()
+    const state = await listInstalledModels(transcriptionModelsDir(), settings)
+    const enginePath = settings[TRANSCRIPTION_SETTINGS_KEYS.enginePath]
+    const engine = await resolveEngine(typeof enginePath === 'string' ? enginePath : null, bundledResourcesDir())
+    return { ...state, engine }
+  })
+
+  ipcMain.handle('transcription:downloadModel', async (e, { id }: { id: string }) => (
+    downloadModel(transcriptionModelsDir(), id, {
+      onProgress: (progress) => { e.sender.send('transcribe:downloadProgress', progress) },
+    })
+  ))
+
+  ipcMain.handle('transcription:cancelDownload', async (_e, { id }: { id: string }) => {
+    abortModelDownload(id)
+    return { ok: true }
+  })
+
+  ipcMain.handle('transcription:removeModel', async (_e, { id }: { id: string }) => (
+    removeModel(transcriptionModelsDir(), id)
+  ))
+
+  ipcMain.handle('transcription:useModel', async (_e, { id }: { id?: unknown } = {}) => {
+    const settings = readSettings()
+    settings[TRANSCRIPTION_SETTINGS_KEYS.managedId] = typeof id === 'string' ? id : null
+    // Choosing a managed model clears a custom one: two answers to the same
+    // question is how a person ends up transcribing with weights they replaced.
+    settings[TRANSCRIPTION_SETTINGS_KEYS.customPath] = null
+    writeSettings(settings)
+    return { ok: true }
+  })
+
+  // The renderer never sees a path it did not get from here, so the file picker
+  // for a person's own model or binary lives on this side.
+  ipcMain.handle('transcription:chooseModelFile', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: 'Choose a whisper model file',
+      properties: ['openFile'],
+      filters: [{ name: 'Whisper model', extensions: ['bin'] }],
+    })
+    if (canceled || filePaths.length === 0) return { ok: false }
+    const settings = readSettings()
+    settings[TRANSCRIPTION_SETTINGS_KEYS.customPath] = filePaths[0]
+    writeSettings(settings)
+    return { ok: true, path: filePaths[0] }
+  })
+
+  ipcMain.handle('transcription:clearCustomModel', async () => {
+    const settings = readSettings()
+    settings[TRANSCRIPTION_SETTINGS_KEYS.customPath] = null
+    writeSettings(settings)
+    return { ok: true }
+  })
+
+  ipcMain.handle('transcription:chooseEngine', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: 'Choose a whisper.cpp binary',
+      properties: ['openFile'],
+    })
+    if (canceled || filePaths.length === 0) return { ok: false }
+    const settings = readSettings()
+    settings[TRANSCRIPTION_SETTINGS_KEYS.enginePath] = filePaths[0]
+    writeSettings(settings)
+    return { ok: true, path: filePaths[0] }
+  })
+
+  // ── styles and fonts ───────────────────────────────────────────────────────
+  // Citadel's look is CSS variables, so its customisation is a folder of
+  // stylesheets loaded after the theme, and a folder of fonts the three type
+  // roles can be pointed at. Both are read from userData and nowhere else.
+  ipcMain.handle('styles:list', async () => (
+    listSnippets(userSnippetsDir(), normalizeEnabledSnippets(readSettings()[APPEARANCE_SETTINGS_KEYS.enabledSnippets]))
+  ))
+
+  ipcMain.handle('styles:setEnabled', async (_e, { name, enabled }: { name?: unknown; enabled?: unknown } = {}) => {
+    if (typeof name !== 'string' || name.trim() === '') return { ok: false }
+    const settings = readSettings()
+    const current = normalizeEnabledSnippets(settings[APPEARANCE_SETTINGS_KEYS.enabledSnippets])
+    // Appended rather than sorted: the order snippets are listed in is the order
+    // they are applied in, so a later one can undo an earlier one on purpose.
+    const next = enabled
+      ? (current.includes(name) ? current : [...current, name])
+      : current.filter((entry) => entry !== name)
+    settings[APPEARANCE_SETTINGS_KEYS.enabledSnippets] = next
+    writeSettings(settings)
+    return { ok: true, enabledSnippets: next }
+  })
+
+  ipcMain.handle('styles:openFolder', async () => {
+    const dir = userSnippetsDir()
+    await fsp.mkdir(dir, { recursive: true }).catch(() => {})
+    await shell.openPath(dir)
+    return { ok: true, folder: dir }
+  })
+
+  ipcMain.handle('fonts:list', async () => (
+    listFonts(userFontsDir(), normalizeFontChoices(readSettings()[APPEARANCE_SETTINGS_KEYS.fontChoices]))
+  ))
+
+  // Bytes rather than a path: the renderer's policy allows no font host, and
+  // handing over the file keeps it that way instead of opening it to reach one.
+  ipcMain.handle('fonts:read', async (_e, { file }: { file?: unknown } = {}) => readFont(userFontsDir(), file))
+
+  ipcMain.handle('fonts:setChoice', async (_e, { role, family }: { role?: unknown; family?: unknown } = {}) => {
+    if (typeof role !== 'string') return { ok: false }
+    const settings = readSettings()
+    const choices = normalizeFontChoices(settings[APPEARANCE_SETTINGS_KEYS.fontChoices])
+    const next = { ...choices, [role]: typeof family === 'string' ? family : '' }
+    settings[APPEARANCE_SETTINGS_KEYS.fontChoices] = normalizeFontChoices(next)
+    writeSettings(settings)
+    return { ok: true, choices: settings[APPEARANCE_SETTINGS_KEYS.fontChoices] }
+  })
+
+  ipcMain.handle('fonts:openFolder', async () => {
+    const dir = userFontsDir()
+    await fsp.mkdir(dir, { recursive: true }).catch(() => {})
+    await shell.openPath(dir)
+    return { ok: true, folder: dir }
+  })
+
+  // ── shell:openURL ──────────────────────────────────────────────────────────
+  // A relic's `link` rides along inside .citadel/.citadelz files, which are made
+  // to be handed around. Handing an arbitrary scheme to openExternal would let a
+  // shared archive launch a local executable (file:), so only browser-safe
+  // schemes get through.
+  ipcMain.handle('shell:openURL', async (_e, { url }: { url: string }) => {
+    if (!isExternallyOpenable(url)) return { ok: false, reason: 'Unsupported link scheme' }
+    await shell.openExternal(url)
+    return { ok: true }
+  })
+
+  // ── settings:get ──────────────────────────────────────────────────────────
+  ipcMain.handle('settings:get', async (_e, { key }: { key: string }) => {
+    const settings = readSettings()
+    return { value: settings[key] ?? null }
+  })
+
+  ipcMain.handle('settings:getMany', async (_e, { keys }: { keys?: unknown } = {}) => {
+    const settings = readSettings()
+    return { values: getManySettings(settings, Array.isArray(keys) ? keys : []) }
+  })
+
+  // ── settings:set ──────────────────────────────────────────────────────────
+  ipcMain.handle('settings:set', async (_e, { key, value }: { key: string; value: unknown }) => {
+    const settings = readSettings()
+    settings[key] = value
+    writeSettings(settings)
+    return { ok: true }
+  })
+
+  ipcMain.handle('settings:setMany', async (_e, { values }: { values?: unknown } = {}) => {
+    const settings = setManySettings(readSettings(), values)
+    writeSettings(settings)
+    return { ok: true }
+  })
+
+  // ── keybinds ─────────────────────────────────────────────────────────────
+  // Kept separate from project files and general appearance settings so a
+  // person's shortcuts travel with their desktop, not with a board they open.
+  ipcMain.handle('keybinds:get', async () => ({ overrides: readSettingsFile(keybindsPath) }))
+
+  ipcMain.handle('keybinds:set', async (_e, { overrides }: { overrides?: unknown } = {}) => {
+    if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return { ok: false }
+    writeSettingsFile(keybindsPath, overrides as Record<string, unknown>)
+    buildMenu()
+    return { ok: true }
+  })
+
+  // ── zoom:set ───────────────────────────────────────────────────────────────
+  ipcMain.handle('zoom:set', async (e, { factor }: { factor: number }) => {
+    if (!Number.isFinite(factor)) return { ok: false }
+    const clamped = Math.min(1.5, Math.max(0.75, factor))
+    e.sender.setZoomFactor(clamped)
+    const settings = readSettings()
+    settings['ui.zoomFactor'] = clamped
+    writeSettings(settings)
+    return { ok: true }
+  })
+
+  // ── window:setMode ─────────────────────────────────────────────────────────
+  // Always-on-top, opacity, and click-through. Only the first two are persisted:
+  // relaunching into a window that ignores the mouse would be a trap.
+  ipcMain.handle('window:setMode', async (e, request: WindowModeRequest = {}) => {
+    const sender = BrowserWindow.fromWebContents(e.sender)
+    // The Stop control is a window of its own, so this request can come from it.
+    // The mode always belongs to the main window: applied to the sender instead,
+    // pressing Stop made the little control click-through and left the app
+    // exactly as it was.
+    const win = windowModeTarget(sender, stopWindowInstance(), stopWindowOwner())
+    if (!win) return { ok: false, mode: windowMode }
+
+    windowMode = nextWindowMode(windowMode, request)
+    let escapeShortcutUnavailable = false
+
+    // Register the escape hatch before making the window ignore the mouse. A
+    // failed global registration (for example, one reserved by the desktop)
+    // must never leave the user with an unrecoverable window.
+    if (windowMode.clickThrough && !globalShortcut.isRegistered(CLICK_THROUGH_SHORTCUT)) {
+      const registered = globalShortcut.register(CLICK_THROUGH_SHORTCUT, () => {
+        windowMode = nextWindowMode(windowMode, { clickThrough: false })
+        closeStopWindow()
+        win.setIgnoreMouseEvents(false)
+        globalShortcut.unregister(CLICK_THROUGH_SHORTCUT)
+        win.webContents.send('window:modeChanged', windowMode)
+        win.focus()
+      })
+      if (!registered) {
+        windowMode = { ...windowMode, clickThrough: false }
+        escapeShortcutUnavailable = true
+      }
+    } else if (!windowMode.clickThrough && globalShortcut.isRegistered(CLICK_THROUGH_SHORTCUT)) {
+      globalShortcut.unregister(CLICK_THROUGH_SHORTCUT)
+    }
+
+    win.setAlwaysOnTop(windowMode.alwaysOnTop)
+    const rendererOpacityFallback = usesRendererOpacityFallback(process.platform)
+    if (!rendererOpacityFallback) win.setOpacity(windowMode.opacity)
+    // forward keeps mouse-move events coming on the platforms that support it,
+    // so the interface can still react as the pointer passes over it. The Stop
+    // control does not rely on it — it is a window of its own.
+    win.setIgnoreMouseEvents(windowMode.clickThrough, { forward: true })
+    if (windowMode.clickThrough) openStopWindow(win, process.env['ELECTRON_RENDERER_URL'])
+    else closeStopWindow()
+
+    // A request from the Stop control answers the Stop control, whose renderer
+    // is on its way out. The app's own renderer is the one that has to hear the
+    // mode changed under it, or its toggle and its toasts go stale.
+    if (isStopWindow(sender)) win.webContents.send('window:modeChanged', windowMode)
+
+    const settings = readSettings()
+    settings['ui.alwaysOnTop'] = windowMode.alwaysOnTop
+    settings['ui.windowOpacity'] = windowMode.opacity
+    writeSettings(settings)
+
+    return {
+      ok: !escapeShortcutUnavailable,
+      mode: windowMode,
+      rendererOpacityFallback,
+      warning: escapeShortcutUnavailable ? 'Click-through was not enabled because its escape shortcut is unavailable.' : undefined,
+    }
+  })
+
+  // ── showcase:load ──────────────────────────────────────────────────────────
+  // The guided example project. Shipped as an extraResource, so it lives beside
+  // the app rather than inside the asar, and is read-only where the app is
+  // installed — the renderer deliberately opens it without adopting its path,
+  // so Ctrl+S asks where to save rather than failing against Program Files.
+  ipcMain.handle('showcase:load', async () => {
+    const candidates = [
+      join(process.resourcesPath ?? '', 'examples', 'showcase.citadel'),
+      join(app.getAppPath(), '..', 'Resource', 'examples', 'showcase.citadel'),
+      join(app.getAppPath(), '..', 'examples', 'showcase.citadel'),
+    ]
+    const found = candidates.find((path) => existsSync(path))
+    if (!found) return { data: null }
+    try {
+      return { data: readFileSync(found, 'utf-8') }
+    } catch {
+      return { data: null }
+    }
+  })
+
+  // ── window:setMenuBarVisible ───────────────────────────────────────────────
+  // Driven by the hover strip in the renderer. Auto-hide stays on underneath,
+  // so Alt reveals the menu whether or not the pointer is anywhere near it.
+  ipcMain.handle('window:setMenuBarVisible', async (e, { visible }: { visible: boolean }) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (!win) return { ok: false }
+    win.setMenuBarVisibility(Boolean(visible))
+    return { ok: true }
+  })
+
+  // ── recovery:get ──────────────────────────────────────────────────────────
+  ipcMain.handle('recovery:get', async () => {
+    const recoveryPath = join(app.getPath('userData'), 'recovery.citadel')
+    try {
+      const { existsSync, readFileSync } = await import('fs')
+      if (!existsSync(recoveryPath)) return { data: null }
+      return { data: readFileSync(recoveryPath, 'utf-8') }
+    } catch { return { data: null } }
+  })
+
+  // ── recovery:clear ────────────────────────────────────────────────────────
+  ipcMain.handle('recovery:clear', async () => {
+    const recoveryPath = join(app.getPath('userData'), 'recovery.citadel')
+    try {
+      const { existsSync, unlinkSync } = await import('fs')
+      if (existsSync(recoveryPath)) unlinkSync(recoveryPath)
+    } catch { /* ignore */ }
+    return { ok: true }
+  })
+}

@@ -1,0 +1,158 @@
+import { create } from 'zustand'
+import { nanoid } from 'nanoid'
+import type { CanvasEvent, CanvasEventType, RecordingSession } from '../../types'
+import type { HistoryMarker } from '../ui/timeMachineModel'
+import { addBoardSnapshot, type BoardSnapshot } from '../ui/boardSnapshots'
+
+type HistoryState = {
+  events: CanvasEvent[]
+  cursor: number               // index of last applied event (-1 = nothing applied)
+  savedCursor: number
+  recordingSession: RecordingSession | null
+  isRecording: boolean
+
+  // Undo / redo
+  push: (type: CanvasEventType, boardId: string, before: unknown, after: unknown) => CanvasEvent
+  undo: () => CanvasEvent | null
+  redo: () => CanvasEvent | null
+  canUndo: () => boolean
+  canRedo: () => boolean
+  isDirty: () => boolean
+  markSaved: () => void
+  markDirty: () => void
+  resetHistory: () => void
+
+  // Recording
+  startRecording: (name: string) => void
+  stopRecording: () => RecordingSession | null
+
+  // Named moments in the log, so a session can be scrubbed back to one.
+  markers: HistoryMarker[]
+  addMarker: (name: string) => HistoryMarker | null
+  removeMarker: (id: string) => void
+
+  // A picture of the board at each manual save, anchored the same way markers
+  // are. Session-scoped, like the log they point into.
+  snapshots: BoardSnapshot[]
+  addSnapshot: (snapshot: Omit<BoardSnapshot, 'id' | 'eventId'>) => BoardSnapshot
+  clearSnapshots: () => void
+
+  // Recordings library
+  recordings: RecordingSession[]
+  saveRecording: (session: RecordingSession) => void
+  deleteRecording: (id: string) => void
+}
+
+export const useHistoryStore = create<HistoryState>((set, get) => ({
+  events: [],
+  cursor: -1,
+  savedCursor: -1,
+  recordingSession: null,
+  isRecording: false,
+  recordings: [],
+
+  push: (type, boardId, before, after) => {
+    const event: CanvasEvent = {
+      id: nanoid(),
+      timestamp: Date.now(),
+      boardId,
+      type,
+      before,
+      after,
+    }
+    set((s) => {
+      // Truncate redo stack
+      const events = [...s.events.slice(0, s.cursor + 1), event]
+      const cursor = events.length - 1
+      // If the saved point was in the discarded redo branch, the new event
+      // occupies an index that used to describe a different state. -2 is
+      // outside the valid cursor range, so the project stays dirty.
+      const savedCursor = s.savedCursor > s.cursor ? -2 : s.savedCursor
+
+      // Append to active recording
+      const recordingSession = s.recordingSession
+        ? { ...s.recordingSession, events: [...s.recordingSession.events, event] }
+        : null
+
+      return { events, cursor, savedCursor, recordingSession }
+    })
+    return event
+  },
+
+  undo: () => {
+    const { cursor, events } = get()
+    if (cursor < 0) return null
+    const event = events[cursor]
+    set({ cursor: cursor - 1 })
+    return event
+  },
+
+  redo: () => {
+    const { cursor, events } = get()
+    if (cursor >= events.length - 1) return null
+    const event = events[cursor + 1]
+    set({ cursor: cursor + 1 })
+    return event
+  },
+
+  canUndo: () => get().cursor >= 0,
+  canRedo: () => get().cursor < get().events.length - 1,
+  isDirty: () => get().cursor !== get().savedCursor,
+  markSaved: () => set((s) => ({ savedCursor: s.cursor })),
+  // -2 is outside the valid cursor range (-1 and up), so a non-event change
+  // cannot become clean merely because a later undo lands on its old index.
+  markDirty: () => set({ savedCursor: -2 }),
+  resetHistory: () => set({ events: [], cursor: -1, savedCursor: -1, recordingSession: null, isRecording: false, markers: [], snapshots: [], recordings: [] }),
+
+  startRecording: (name) => {
+    set({
+      isRecording: true,
+      recordingSession: { id: nanoid(), name, startedAt: Date.now(), events: [] },
+    })
+  },
+
+  stopRecording: () => {
+    const { recordingSession } = get()
+    if (!recordingSession) return null
+    set({ isRecording: false, recordingSession: null })
+    return recordingSession
+  },
+
+  saveRecording: (session) => {
+    set((s) => ({ recordings: [...s.recordings, session] }))
+    get().markDirty()
+  },
+
+  deleteRecording: (id) => {
+    if (!get().recordings.some((recording) => recording.id === id)) return
+    set((s) => ({ recordings: s.recordings.filter((r) => r.id !== id) }))
+    get().markDirty()
+  },
+
+  markers: [],
+
+  // Keyed by the event it sits after, not by position: a later edit truncates
+  // the redo stack and every index past it moves, but the event id does not.
+  addMarker: (name) => {
+    const { cursor, events, markers } = get()
+    const eventId = cursor >= 0 && cursor < events.length ? events[cursor].id : null
+    if (markers.some((marker) => marker.eventId === eventId)) return null
+    const marker: HistoryMarker = { id: nanoid(), eventId, name }
+    set({ markers: [...markers, marker] })
+    return marker
+  },
+
+  removeMarker: (id) => set((s) => ({ markers: s.markers.filter((marker) => marker.id !== id) })),
+
+  snapshots: [],
+
+  addSnapshot: (snapshot) => {
+    const { cursor, events, snapshots } = get()
+    const eventId = cursor >= 0 && cursor < events.length ? events[cursor].id : null
+    const next: BoardSnapshot = { id: nanoid(), eventId, ...snapshot }
+    set({ snapshots: addBoardSnapshot(snapshots, next) })
+    return next
+  },
+
+  clearSnapshots: () => set({ snapshots: [] }),
+}))

@@ -1,0 +1,130 @@
+import { afterEach as AfterEach, beforeEach as BeforeEach, describe as Describe, expect as Expect, it as It, vi as Vi } from 'vitest'
+import { EmptyDocument } from '../Shared/Types'
+Vi.doMock('./FileDialog', () => ({ RequestFilePath: Vi.fn() }))
+const { RequestFilePath } = await import('./FileDialog')
+const { CreateBrowserApi } = await import('./BrowserApi')
+
+const FetchMock = Vi.fn()
+const PathDialog = Vi.mocked(RequestFilePath)
+const Stored = new Map<string, string>()
+let Unload: (InputEvent: Pick<BeforeUnloadEvent, 'preventDefault'> & { returnValue?: string }) => void
+let Visible: () => void
+
+function Response(Value: unknown, Status = 200): void {
+  FetchMock.mockResolvedValueOnce({ ok: Status < 400, status: Status, json: async () => Value })
+}
+function Request(Index = 0): { endpoint: string; headers: Record<string, string>; body: Record<string, unknown> } {
+  const [Endpoint, Options] = FetchMock.mock.calls[Index]
+  return { endpoint: Endpoint, headers: Options.headers, body: JSON.parse(Options.body) }
+}
+
+BeforeEach(() => {
+  Vi.clearAllMocks(); Stored.clear()
+  Vi.useFakeTimers()
+  const Location = { href: 'http://127.0.0.1:47321/', search: '' }
+  Vi.stubGlobal('window', {
+    location: Location,
+    history: { replaceState: Vi.fn((State, Title, Url: URL) => { Location.href = Url.toString(); Location.search = Url.search }) },
+    addEventListener: Vi.fn((Type, Callback) => { Unload = Callback }),
+    setInterval,
+    confirm: Vi.fn(() => true),
+  })
+  Vi.stubGlobal('sessionStorage', { getItem: (Key: string) => Stored.get(Key) ?? null, setItem: (Key: string, Value: string) => Stored.set(Key, Value), removeItem: (Key: string) => Stored.delete(Key) })
+  Vi.stubGlobal('document', { visibilityState: 'visible', addEventListener: Vi.fn((Type, Callback) => { Visible = Callback }) })
+  Vi.stubGlobal('fetch', FetchMock)
+})
+AfterEach(() => { Vi.unstubAllGlobals(); Vi.useRealTimers() })
+
+Describe('browser API', () => {
+  It('isolates duplicated tabs while restoring the last saved path', async () => {
+    Stored.set('hybridref.lastPath', 'D:/参考/Test.hbr')
+    Response(null); Response(null)
+    await CreateBrowserApi().Startup()
+    await CreateBrowserApi().Startup()
+    Expect(Request().body).toEqual({ path: 'D:/参考/Test.hbr' })
+    Expect(Request().headers['X-HybridRef-Client']).toBe('browser')
+    Expect(Request().headers['Content-Type']).toBe('application/json')
+    Expect(Request().headers['X-HybridRef-Session']).not.toBe(Request(1).headers['X-HybridRef-Session'])
+  })
+
+  It('uses a launcher project first and remembers the loaded path for refresh', async () => {
+    const Project = 'D:/参考/启动.hbr'
+    window.location.href = `http://127.0.0.1:47321/?project=${encodeURIComponent(Project)}`
+    window.location.search = `?project=${encodeURIComponent(Project)}`
+    Stored.set('hybridref.lastPath', 'D:/Old.hbr')
+    Response({ path: Project, document: EmptyDocument(), assets: [] })
+    await CreateBrowserApi().Startup()
+    Expect(Request().body).toEqual({ path: Project })
+    Expect(Stored.get('hybridref.lastPath')).toBe(Project)
+    Expect(window.location.search).toBe('')
+  })
+
+  It('clears the server store and last path when starting a new board', async () => {
+    Stored.set('hybridref.lastPath', 'D:/Old.hbr')
+    Response({ ok: true })
+    await CreateBrowserApi().NewProject()
+    Expect(Request().endpoint).toBe('/api/new')
+    Expect(Stored.has('hybridref.lastPath')).toBe(false)
+  })
+
+  It('keeps the old last path when opening a file fails', async () => {
+    Stored.set('hybridref.lastPath', 'D:/Old.hbr')
+    PathDialog.mockResolvedValueOnce('D:/Broken.hbr')
+    Response({ error: '画板格式无效' }, 400)
+    await Expect(CreateBrowserApi().Open()).rejects.toThrow('画板格式无效')
+    Expect(Stored.get('hybridref.lastPath')).toBe('D:/Old.hbr')
+  })
+
+  It('asks before overwriting a destination chosen in Save As', async () => {
+    PathDialog.mockResolvedValueOnce('D:/Existing.hbr')
+    Response({ error: '文件已存在', code: 'EXISTS' }, 409)
+    Response({ path: 'D:/Existing.hbr' })
+    await CreateBrowserApi().Save(EmptyDocument(), null)
+    Expect(Request().body.overwrite).toBe(false)
+    Expect(window.confirm).toHaveBeenCalledOnce()
+    Expect(Request(1).body.overwrite).toBe(true)
+    Expect(Stored.get('hybridref.lastPath')).toBe('D:/Existing.hbr')
+  })
+
+  It('does not overwrite when the user cancels confirmation', async () => {
+    PathDialog.mockResolvedValueOnce('D:/Existing.hbr')
+    Vi.mocked(window.confirm).mockReturnValueOnce(false)
+    Response({ error: '文件已存在', code: 'EXISTS' }, 409)
+    Expect(await CreateBrowserApi().Save(EmptyDocument(), null)).toBeNull()
+    Expect(FetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  It('saves an already opened file directly without another file dialog', async () => {
+    Response({ path: 'D:/Open.hbr' })
+    await CreateBrowserApi().Save(EmptyDocument(), 'D:/Open.hbr')
+    Expect(PathDialog).not.toHaveBeenCalled()
+    Expect(Request().body.overwrite).toBe(true)
+  })
+
+  It('uploads image bytes as base64 without requesting a local file path', async () => {
+    Response({ assets: [], errors: [] })
+    await CreateBrowserApi().ImportBytes([{ name: '参考.png', bytes: new Uint8Array([0, 128, 255]) }])
+    Expect(Request().body).toEqual({ files: [{ name: '参考.png', data: 'AID/' }] })
+  })
+
+  It('only requests the browser close warning while there are unsaved edits', () => {
+    const Api = CreateBrowserApi(), InputEvent = { preventDefault: Vi.fn(), returnValue: undefined as string | undefined }
+    Unload(InputEvent)
+    Expect(InputEvent.preventDefault).not.toHaveBeenCalled()
+    Api.SetDirty(true); Unload(InputEvent)
+    Expect(InputEvent.preventDefault).toHaveBeenCalledOnce()
+    Expect(InputEvent.returnValue).toBe('')
+    Api.SetDirty(false); Unload(InputEvent)
+    Expect(InputEvent.preventDefault).toHaveBeenCalledOnce()
+  })
+
+  It('keeps a long-lived page session active and pings when the tab is revisited', async () => {
+    CreateBrowserApi()
+    Response({ ok: true })
+    await Vi.advanceTimersByTimeAsync(60_000)
+    Expect(Request().endpoint).toBe('/api/ping')
+    Response({ ok: true })
+    Visible()
+    Expect(Request(1).endpoint).toBe('/api/ping')
+  })
+})

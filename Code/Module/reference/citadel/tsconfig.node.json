@@ -1,0 +1,23 @@
+{
+  "extends": "@electron-toolkit/tsconfig/tsconfig.node.json",
+  "include": [
+    "electron.vite.config.*",
+    "src/main/**/*",
+    "src/preload/**/*",
+    "src/types/documents.ts",
+    "src/types/projectAssetPaths.ts",
+    "src/types/transcription.ts",
+    "src/types/appearance.ts"
+  ],
+  "compilerOptions": {
+    "composite": true,
+    "outDir": "node_modules/.cache/tsc/node",
+    "tsBuildInfoFile": "node_modules/.cache/tsc/node.tsbuildinfo",
+    "baseUrl": ".",
+    "types": ["electron-vite/node"],
+    "paths": {
+      "@main/*": ["src/main/*"],
+      "@types/*": ["src/types/*"]
+    }
+  }
+}

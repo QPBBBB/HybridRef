@@ -1,0 +1,5 @@
+*.hbr text eol=lf
+*.yaml text eol=lf
+*.png binary
+*.jpg binary
+*.gif binary

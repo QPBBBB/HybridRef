@@ -1,0 +1,23 @@
+{
+  "extends": "@electron-toolkit/tsconfig/tsconfig.web.json",
+  "include": ["src/renderer/**/*", "src/types/**/*", "src/web-demo/**/*"],
+  "references": [{ "path": "./tsconfig.node.json" }],
+  "compilerOptions": {
+    "composite": true,
+    "outDir": "node_modules/.cache/tsc/web",
+    "tsBuildInfoFile": "node_modules/.cache/tsc/web.tsbuildinfo",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/renderer/*"],
+      "@store/*": ["src/renderer/store/*"],
+      "@canvas/*": ["src/renderer/canvas/*"],
+      "@ui/*": ["src/renderer/ui/*"],
+      "@keybinds/*": ["src/renderer/keybinds/*"],
+      "@theme/*": ["src/renderer/theme/*"],
+      "@mascot/*": ["src/renderer/mascot/*"],
+      "@export/*": ["src/renderer/export/*"],
+      "@plugins/*": ["src/renderer/plugins/*"],
+      "@types/*": ["src/types/*"]
+    }
+  }
+}

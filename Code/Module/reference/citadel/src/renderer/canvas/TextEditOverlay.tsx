@@ -1,0 +1,270 @@
+import React, { useEffect, useRef, useState } from 'react'
+import type { CanvasItem } from '../../types'
+import { useCanvasStore } from '../store/canvasStore'
+import { useUIStore } from '../store/uiStore'
+import { documentEditorSource, documentTextMetaPatch, itemRichDocument } from './richDocument'
+import { DocumentFormattingTools } from './DocumentFormattingTools'
+import { useHistoryStore } from '../store/historyStore'
+
+const STICKY_COLORS = ['#1e1b18', '#171d22', '#1a211a', '#241919', '#211e16', '#172220'] as const
+const FONT_SIZES = [
+  { label: 'S', value: 12 },
+  { label: 'M', value: 14 },
+  { label: 'L', value: 18 },
+] as const
+const ALIGNS = [
+  { label: 'L', value: 'left' },
+  { label: 'C', value: 'center' },
+  { label: 'R', value: 'right' },
+] as const
+const TOOLBAR_H = 38
+
+type Props = { item: CanvasItem }
+
+/**
+ * Positions an HTML <textarea> over a text or sticky item so the user can type.
+ * Rendered in screen-space (outside Konva) so it receives real keyboard events.
+ */
+export function TextEditOverlay({ item }: Props): React.ReactElement {
+  const viewport = useCanvasStore((s) => s.viewport())
+  const updateItem = useCanvasStore((s) => s.updateItem)
+  const activeBoardId = useCanvasStore((s) => s.activeBoardId)!
+  const setEditingItemId = useUIStore((s) => s.setEditingItemId)
+  const ref = useRef<HTMLTextAreaElement>(null)
+  const toolbarRef = useRef<HTMLDivElement>(null)
+  const committed = useRef(false)
+  // Rich blocks are immutable: edits always replace the complete rich payload.
+  const beforeMeta = useRef<Record<string, unknown>>({ ...(item.meta ?? {}) })
+  const [pendingMeta, setPendingMeta] = useState<Record<string, unknown>>({ ...(item.meta ?? {}) })
+
+  const applyMeta = (patch: Record<string, unknown>) => {
+    setPendingMeta((prev) => {
+      const next = { ...prev, ...patch }
+      updateItem(activeBoardId, item.id, { meta: next })
+      return next
+    })
+  }
+
+  const sx = item.x * viewport.scale + viewport.x
+  const sy = item.y * viewport.scale + viewport.y
+  const sw = item.width * viewport.scale
+  const sh = item.height * viewport.scale
+  const isSticky = item.type === 'sticky'
+  const isRich = item.type === 'text' && !!itemRichDocument(beforeMeta.current)
+  const displayFontSize = ((pendingMeta.fontSize as number) ?? (isSticky ? 14 : 18)) * viewport.scale
+  const fitsAbove = sy >= TOOLBAR_H + 8
+  const fitsBelow = sy + sh + 4 + TOOLBAR_H <= window.innerHeight
+  const toolbarTop = fitsAbove ? sy - TOOLBAR_H - 4
+    : fitsBelow ? sy + sh + 4
+    : sy - TOOLBAR_H - 4
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+  }, [])
+
+  const close = () => setEditingItemId(null)
+
+  const commit = () => {
+    if (committed.current) return
+    committed.current = true
+    const val = ref.current?.value ?? ''
+    const afterMeta = { ...pendingMeta, ...documentTextMetaPatch(beforeMeta.current, val) }
+    updateItem(activeBoardId, item.id, { meta: afterMeta })
+    useHistoryStore.getState().push(
+      'ITEM_STYLE',
+      activeBoardId,
+      { id: item.id, meta: beforeMeta.current },
+      { id: item.id, meta: afterMeta },
+    )
+    close()
+  }
+
+  const revert = () => {
+    if (committed.current) return
+    committed.current = true
+    updateItem(activeBoardId, item.id, { meta: beforeMeta.current })
+    close()
+  }
+
+  return (
+    <>
+      {isRich && <div ref={toolbarRef} style={{ position: 'fixed', left: Math.max(8, Math.min(sx, window.innerWidth - 440)), top: Math.max(8, toolbarTop), zIndex: 201, background: 'var(--bg-panel)', border: '1px solid var(--border)', padding: 6 }}>
+        <DocumentFormattingTools textareaRef={ref} onChange={(source) => applyMeta(documentTextMetaPatch(beforeMeta.current, source))} />
+      </div>}
+      {isSticky && (
+        <div
+          ref={toolbarRef}
+          style={{
+            position: 'fixed',
+            left: Math.min(sx, window.innerWidth - 360),
+            top: toolbarTop,
+            height: TOOLBAR_H,
+            background: 'var(--bg-panel)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-md)',
+            padding: '5px 8px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--space-5)',
+            boxShadow: 'var(--shadow-lg)',
+            zIndex: 201,
+          }}
+        >
+          {/* Colour swatches */}
+          <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+            {STICKY_COLORS.map((c) => (
+              <button
+                key={c}
+                type="button"
+                onMouseDown={(e) => { e.preventDefault(); applyMeta({ color: c }) }}
+                style={{
+                  width: 16, height: 16,
+                  background: c,
+                  border: pendingMeta.color === c
+                    ? '1.5px solid var(--accent)'
+                    : '1.5px solid var(--border)',
+                  borderRadius: 'var(--radius-sm)',
+                  cursor: 'pointer',
+                  padding: 0,
+                  flexShrink: 0,
+                }}
+              />
+            ))}
+            <input
+              type="color"
+              value={(pendingMeta.color as string) ?? '#1e1b18'}
+              onChange={(e) => applyMeta({ color: e.target.value })}
+              style={{
+                width: 16, height: 16,
+                padding: 0, border: 'none', background: 'none', cursor: 'pointer',
+              }}
+              title="Custom colour"
+            />
+          </div>
+          {/* Font size */}
+          <div style={{ display: 'flex', gap: 'var(--space-1)' }}>
+            {FONT_SIZES.map(({ label, value }) => {
+              const active = (pendingMeta.fontSize ?? 14) === value
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  onMouseDown={(e) => { e.preventDefault(); applyMeta({ fontSize: value }) }}
+                  style={{
+                    width: 22, height: 22,
+                    background: active ? 'var(--accent)' : 'var(--bg-canvas)',
+                    color: active ? '#070808' : 'var(--text-primary)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 'var(--radius-sm)',
+                    cursor: 'pointer',
+                    fontSize: 'var(--text-sm)',
+                    fontFamily: 'var(--font-mono)',
+                    fontWeight: 600,
+                    padding: 0,
+                  }}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+          {/* Alignment */}
+          <div style={{ display: 'flex', gap: 'var(--space-1)' }}>
+            {ALIGNS.map(({ label, value }) => {
+              const active = (pendingMeta.align ?? 'left') === value
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  onMouseDown={(e) => { e.preventDefault(); applyMeta({ align: value }) }}
+                  style={{
+                    width: 22, height: 22,
+                    background: active ? 'var(--accent)' : 'var(--bg-canvas)',
+                    color: active ? '#070808' : 'var(--text-primary)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 'var(--radius-sm)',
+                    cursor: 'pointer',
+                    fontSize: 'var(--text-sm)',
+                    fontFamily: 'var(--font-mono)',
+                    fontWeight: 600,
+                    padding: 0,
+                  }}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+          {/* Bold */}
+          <button
+            type="button"
+            onMouseDown={(e) => { e.preventDefault(); applyMeta({ fontStyle: pendingMeta.fontStyle === 'bold' ? 'normal' : 'bold' }) }}
+            style={{
+              width: 22, height: 22,
+              background: pendingMeta.fontStyle === 'bold' ? 'var(--accent)' : 'var(--bg-canvas)',
+              color: pendingMeta.fontStyle === 'bold' ? '#070808' : 'var(--text-primary)',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-sm)',
+              cursor: 'pointer',
+              fontSize: 'var(--text-base)',
+              fontFamily: 'var(--font-mono)',
+              fontWeight: 700,
+              padding: 0,
+            }}
+          >
+            B
+          </button>
+        </div>
+      )}
+      <textarea
+        ref={ref}
+        defaultValue={documentEditorSource(item.meta)}
+        aria-label={isRich ? 'Document Markdown' : 'Item text'}
+        onChange={isRich ? (e) => applyMeta(documentTextMetaPatch(beforeMeta.current, e.target.value)) : undefined}
+        onBlur={(e) => {
+          if (toolbarRef.current?.contains(e.relatedTarget as Node)) return
+          commit()
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') { revert(); return }
+          if (e.key === 'Enter' && !isSticky && !isRich) { e.preventDefault(); commit() }
+        }}
+        style={{
+          position: 'fixed',
+          left: sx,
+          top: sy,
+          width: sw,
+          height: isSticky ? sh : Math.max(sh, displayFontSize * 1.6),
+          fontSize: displayFontSize,
+          fontFamily: isSticky
+            ? 'var(--font-body)'
+            : ((item.meta?.fontFamily as string) ?? 'var(--font-body)'),
+          fontWeight: isSticky ? (pendingMeta.fontStyle === 'bold' ? 700 : 400) : 400,
+          textAlign: isSticky
+            ? ((pendingMeta.align as string) ?? 'left') as React.CSSProperties['textAlign']
+            : 'left',
+          color: isSticky
+            ? 'var(--text-primary)'
+            : ((item.meta?.color as string) ?? 'var(--text-primary)'),
+          background: isSticky
+            ? ((pendingMeta.color as string) ?? '#1e1b18')
+            : 'rgba(7,8,8,0.88)',
+          border: '1.5px solid var(--accent)',
+          borderRadius: isSticky ? 4 : 2,
+          padding: isSticky ? 8 : '2px 4px',
+          resize: 'none',
+          outline: 'none',
+          overflow: isRich ? 'auto' : 'hidden',
+          transform: item.rotation ? `rotate(${item.rotation}deg)` : undefined,
+          transformOrigin: 'top left',
+          zIndex: 200,
+          lineHeight: 1.4,
+          boxSizing: 'border-box',
+        }}
+      />
+    </>
+  )
+}

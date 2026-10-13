@@ -1,0 +1,39 @@
+{
+  "name": "hybridref",
+  "version": "0.3.0",
+  "description": "Browser-based image reference board with local YAML storage",
+  "license": "MIT",
+  "private": true,
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "demo": "tsx Scripts/CreateDemo.ts",
+    "build": "node Scripts/Build.cjs",
+    "dev": "node Scripts/Launch.cjs --build",
+    "start": "node Scripts/Launch.cjs",
+    "test": "vitest",
+    "e2e": "node Scripts/Build.cjs && playwright test",
+    "check:naming": "node Scripts/CheckNaming.cjs",
+    "typecheck": "node Scripts/CheckNaming.cjs && tsc --noEmit",
+    "test:run": "vitest run"
+  },
+  "dependencies": {
+    "bmp-js": "0.1.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "sharp": "0.34.3",
+    "yaml": "2.8.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.42.1",
+    "@types/bmp-js": "0.1.2",
+    "@types/node": "^20.11.30",
+    "@types/react": "^18.2.67",
+    "@types/react-dom": "^18.2.22",
+    "@vitejs/plugin-react": "^4.2.1",
+    "tsx": "4.20.5",
+    "typescript": "^5.4.2",
+    "vite": "^5.2.2",
+    "vitest": "^1.4.0",
+    "esbuild": "^0.21.5"
+  }
+}

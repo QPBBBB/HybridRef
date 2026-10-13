@@ -1,0 +1,359 @@
+/*
+ * Clean Archive baseline
+ *
+ * Keep the canvas and its relics as the visual focus. The archival character is
+ * carried by a warm material palette and restrained detail, rather than by
+ * permanent ornamental chrome.
+ */
+
+:root {
+  --chrome-face: var(--bg-ui);
+  --chrome-face-raised: var(--bg-elevated);
+  --chrome-face-sunk: var(--bg-sunken);
+  --chrome-edge: var(--border);
+  --chrome-edge-muted: var(--border-muted);
+  --chrome-accent: var(--accent);
+  --chrome-text: var(--text-secondary);
+  --chrome-text-muted: var(--text-muted);
+  --chrome-highlight: rgba(232, 221, 208, 0.05);
+  --chrome-veil: rgba(10, 9, 7, 0.72);
+  --chrome-radius: 5px;
+}
+
+.app-root {
+  background: radial-gradient(circle at 50% -20%, rgba(200, 169, 110, 0.045), transparent 45%), var(--bg-canvas);
+}
+
+.citadel-shell {
+  --context-rail-w: var(--sidebar-right-w);
+}
+
+.citadel-shell[data-archive-rail-collapsed="true"] {
+  --context-rail-w: 34px;
+}
+
+.app-root::before {
+  opacity: 0.08;
+  background-image:
+    linear-gradient(rgba(232, 221, 208, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(232, 221, 208, 0.025) 1px, transparent 1px);
+  background-size: 64px 64px;
+}
+
+.citadel-board-tabs {
+  background: var(--chrome-face) !important;
+  border-bottom-color: var(--chrome-edge) !important;
+  box-shadow: none !important;
+}
+
+.citadel-board-tab {
+  border-right-color: var(--chrome-edge-muted) !important;
+}
+
+.citadel-board-tab-active {
+  background: var(--bg-elevated) !important;
+  box-shadow: inset 0 -2px 0 var(--chrome-accent) !important;
+}
+
+.citadel-project-menu {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: calc(var(--z-ui) + 1);
+}
+
+.citadel-project-menu-trigger,
+.citadel-project-menu-popover button {
+  border: 1px solid var(--chrome-edge-muted);
+  border-radius: 4px;
+  background: var(--bg-ui);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: var(--font-body);
+}
+
+.citadel-project-menu-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 9px;
+  font-size: 11px;
+}
+
+.citadel-project-menu-trigger svg {
+  color: var(--text-muted);
+}
+
+/* Static flip, no transition: the disclosure marker points at its own state
+   rather than animating between them. */
+.citadel-disclosure-collapsed {
+  transform: rotate(-90deg);
+}
+
+.citadel-project-menu-trigger:hover,
+.citadel-project-menu-popover button:hover {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+.citadel-project-menu-popover {
+  position: absolute;
+  top: 34px;
+  right: 0;
+  display: grid;
+  min-width: 156px;
+  padding: 5px;
+  border: 1px solid var(--chrome-edge);
+  border-radius: var(--chrome-radius);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-lg);
+}
+
+.citadel-project-menu-popover button {
+  width: 100%;
+  padding: 7px 8px;
+  border-color: transparent;
+  border-radius: 3px;
+  background: transparent;
+  text-align: left;
+  font-size: 11px;
+}
+
+.citadel-project-menu-divider {
+  height: 1px;
+  margin: 4px 3px;
+  background: var(--chrome-edge-muted);
+}
+
+.citadel-toolbar {
+  background: var(--chrome-face) !important;
+  border-color: var(--chrome-edge) !important;
+  border-radius: var(--chrome-radius) !important;
+  box-shadow: var(--shadow-md) !important;
+}
+
+.citadel-toolbar-overflow {
+  position: relative;
+}
+
+.citadel-toolbar-overflow-menu {
+  position: absolute;
+  top: 0;
+  left: 44px;
+  display: grid;
+  grid-template-columns: repeat(2, 36px);
+  gap: 4px;
+  width: max-content;
+  padding: 6px;
+  border: 1px solid var(--chrome-edge);
+  border-radius: var(--chrome-radius);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-lg);
+}
+
+.citadel-toolbar button,
+.citadel-sidebar button,
+.citadel-panel-button {
+  box-shadow: none !important;
+}
+
+.citadel-toolbar button:hover,
+.citadel-sidebar button:hover,
+.citadel-action-strip button:hover {
+  background: var(--bg-hover) !important;
+  border-color: var(--chrome-accent) !important;
+  color: var(--chrome-accent) !important;
+  box-shadow: 0 0 0 1px var(--accent-soft) !important;
+}
+
+.citadel-action-strip {
+  backdrop-filter: blur(3px);
+}
+
+.citadel-action-strip::before {
+  display: none;
+}
+
+.citadel-sidebar {
+  background: var(--chrome-face) !important;
+  border-left-color: var(--chrome-edge) !important;
+  box-shadow: -10px 0 26px rgba(6, 4, 2, 0.22) !important;
+}
+
+.citadel-sidebar-title {
+  color: var(--chrome-accent) !important;
+  text-shadow: none !important;
+}
+
+.citadel-sidebar-rule {
+  background: var(--chrome-edge) !important;
+}
+
+.citadel-sidebar button {
+  background: transparent !important;
+  border-color: var(--chrome-edge-muted) !important;
+  border-radius: 4px !important;
+  color: var(--chrome-text) !important;
+}
+
+.citadel-floating-panel,
+.citadel-minimap {
+  background: var(--bg-panel) !important;
+  border-color: var(--chrome-edge) !important;
+  box-shadow: var(--shadow-lg) !important;
+}
+
+/* Context follows the current relic or thread instead of becoming another dock. */
+.citadel-context-inspector {
+  max-height: calc(100vh - var(--topbar-h) - 16px);
+  overflow-y: auto;
+}
+
+.citadel-floating-panel input,
+.citadel-floating-panel select,
+.citadel-floating-panel textarea,
+.citadel-floating-panel kbd {
+  background: var(--bg-sunken) !important;
+  border-color: var(--chrome-edge-muted) !important;
+  box-shadow: none !important;
+}
+
+.citadel-floating-panel button:not([aria-pressed="true"]):hover,
+.citadel-context-menu button:hover {
+  background: var(--bg-hover) !important;
+  border-color: var(--chrome-edge) !important;
+  color: var(--chrome-accent) !important;
+}
+
+.citadel-context-menu {
+  background: var(--bg-panel) !important;
+  border-color: var(--chrome-edge) !important;
+  box-shadow: var(--shadow-lg) !important;
+}
+
+.citadel-list-row {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.citadel-list-row:hover {
+  background: var(--bg-hover) !important;
+  box-shadow: inset 0 0 0 1px var(--accent-soft) !important;
+}
+
+.citadel-sidebar-section {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.citadel-status-strip {
+  border-top-color: var(--chrome-edge-muted) !important;
+  border-bottom-color: var(--chrome-edge-muted) !important;
+}
+
+/* The rail's controls are full-width and centred, so a left-aligned heading
+   above them reads as a mistake rather than a choice. Centred, with the section
+   spacing that had been left to the gap between groups. */
+.citadel-sidebar-section-title {
+  color: var(--chrome-text-muted) !important;
+  text-align: center;
+  margin-bottom: 6px;
+  letter-spacing: 0.02em;
+}
+
+.citadel-sidebar-disclosure {
+  display: flex;
+  align-items: center;
+  /* Centred with the section headings above it. The chevron stays beside the
+     label rather than pinned to the edge, so it still reads as expandable. */
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  padding: 5px 2px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--chrome-text-muted);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.citadel-sidebar-disclosure:hover {
+  color: var(--chrome-accent);
+}
+
+.citadel-sidebar-disclosure-content {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 2px 0 1px 7px;
+  border-left: 1px solid var(--chrome-edge-muted);
+}
+
+/* The archive is available at a glance, but no longer has to occupy the canvas. */
+.citadel-archive-rail-peek {
+  position: fixed;
+  top: var(--topbar-h);
+  right: 0;
+  bottom: 0;
+  z-index: var(--z-ui);
+  width: 34px;
+  padding: 6px 4px;
+  background: var(--chrome-face);
+  border-left: 1px solid var(--chrome-edge);
+}
+
+.citadel-archive-rail-reveal {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+  padding: 7px 0;
+  border: 1px solid var(--chrome-edge-muted);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  writing-mode: vertical-rl;
+}
+
+.citadel-archive-rail-reveal span:first-child {
+  font-family: var(--font-body);
+  font-size: 17px;
+  line-height: 0.7;
+}
+
+.citadel-archive-rail-reveal:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--bg-hover);
+}
+
+.citadel-archive-rail-collapse {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  z-index: 1;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--chrome-edge-muted) !important;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 1;
+}
