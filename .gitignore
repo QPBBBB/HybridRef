@@ -1,6 +1,4 @@
 Code/Module/Runtime/
-Code/Resource/whisper/*
-!Code/Resource/whisper/README.md
 Project/**/.*.tmp
 Dependencies/Cache/
 Dependencies/Packages/

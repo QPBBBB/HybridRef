@@ -1,5 +1,5 @@
 import React, { useEffect as UseEffect, useRef as UseRef, useState as UseState } from 'react'
-import { EmptyDocument, EmptyTextResource, type BoardDocument, type BoardImage, type BoardText, type TextResource, type ImageAsset, type ImportResult, type LoadedBoard, type ProjectEntry, type Viewport } from '../Shared/Types'
+import { EmptyDocument, EmptyTextResource, TextFontFamily, type BoardDocument, type BoardImage, type BoardText, type TextResource, type ImageAsset, type ImportResult, type LoadedBoard, type ProjectEntry, type Viewport } from '../Shared/Types'
 import {
   BoundingBox, CenterImages, FitViewport, Intersects, NormalizeImages, PushImages,
   RectFromPoints, ResizeGroup, ResizeTextFrame, ScreenToWorld, SnapMove, ZoomAt,
@@ -7,10 +7,23 @@ import {
 } from './Geometry'
 import { ClearImageCache, DecodeAssets } from './ImageCache'
 import { IsFileDialogOpen } from './FileDialog'
-import { TextEditor, TextColor } from './TextEditor'
+import { TextEditor } from './TextEditor'
+import { TextAppearance } from './TextAppearance'
+import { CreateSelectionSnapshot } from './SelectionSnapshot'
+import { TextInlineInput } from './TextInlineInput'
+import { TextCreateIcon, TextSettingsIcon } from './TextCreateIcon'
 
 type BoardItem = BoardImage | BoardText
 const BoardItems = (Document: BoardDocument): BoardItem[] => [...Document.images, ...Document.texts]
+
+type TextEditSession = {
+  id: string
+  before: BoardItem[]
+  draft: TextResource
+  inline: boolean
+  settings: boolean
+  settingsBefore?: TextResource
+}
 
 type Gesture = {
   kind: 'pan' | 'marquee' | 'move' | 'resize'
@@ -67,17 +80,20 @@ export default function App(): React.ReactElement {
   const StartupAllowed = UseRef(true)
   const InternalClipboard = UseRef<BoardItem[]>([])
   const ClipboardToken = UseRef('')
+  const Copying = UseRef(false)
   const PasteOffset = UseRef(0)
   const SaveQueue = UseRef<Promise<unknown>>(Promise.resolve())
-  const [EditingId, SetEditingId] = UseState<string | null>(null)
-  const DraftDirty = UseRef(false)
+  const [TextEdit, SetTextEdit] = UseState<TextEditSession | null>(null)
+  const TextEditing = UseRef<TextEditSession | null>(null)
+  const TextComposing = UseRef(false)
+  const AfterComposition = UseRef<(() => void)[]>([])
 
   function StartWork(): void { WorkingRef.current += 1; SetWorking(WorkingRef.current) }
   function EndWork(): void { WorkingRef.current -= 1; SetWorking(WorkingRef.current) }
 
   function Select(Ids: string[]): void { Selection.current = Ids; SetSelected(Ids) }
   function RefreshDirty(): void {
-    const Next = DraftDirty.current || Fingerprint(BoardItems(Current.current)) !== SavedItems.current
+    const Next = Fingerprint(TextDraftItems()) !== SavedItems.current
     DirtyRef.current = Next
     SetDirty(Next)
     window.HybridRef.SetDirty(Next)
@@ -96,7 +112,7 @@ export default function App(): React.ReactElement {
     RefreshDirty()
   }
   function History(Direction: 'undo' | 'redo'): void {
-    if (Gesture.current) return
+    if (WorkingRef.current || Gesture.current) return
     const From = Direction === 'undo' ? Past : Future
     const To = Direction === 'undo' ? Future : Past
     const Next = From.current.pop()
@@ -134,9 +150,10 @@ export default function App(): React.ReactElement {
       : (CurrentIndex + (InputEvent.key === 'ArrowDown' ? 1 : -1) + Items.length) % Items.length
     Items[NextIndex]?.focus()
   }
-  function Reset(Next: BoardDocument, NextPath: string | null, NextAssets: ImageAsset[]): void {
-    SetEditingId(null)
-    DraftDirty.current = false
+  function Reset(Next: BoardDocument, NextPath: string | null, NextAssets: ImageAsset[], MissingResources: string[] = []): void {
+    const FixedFont = { ...Next, texts: Next.texts.map((Item) => ({ ...Item, text: { ...Item.text, font: { ...Item.text.font, family: TextFontFamily } } })) }
+    TextEditing.current = null; SetTextEdit(null)
+    TextComposing.current = false; AfterComposition.current = []
     Session.current += 1
     ClearImageCache()
     AssetMap.current = Object.fromEntries(NextAssets.map((Asset) => [Asset.id, Asset]))
@@ -150,12 +167,12 @@ export default function App(): React.ReactElement {
     PasteOffset.current = 0
     Past.current = []; Future.current = []
     SetHistoryVersion((Value) => Value + 1)
-    Publish(Next)
+    Publish(FixedFont)
     Select([])
     CurrentPath.current = NextPath; SetPath(NextPath)
-    SavedItems.current = Fingerprint(BoardItems(Next))
+    SavedItems.current = Fingerprint(BoardItems(FixedFont))
     RefreshDirty()
-    SetMessage('')
+    SetMessage(MissingResources.length ? `${MissingResources.length} 个资源引用丢失，请手动检查 .hbr 中对应的引用` : '')
   }
   async function NewBoard(): Promise<void> {
     if (WorkingRef.current) return
@@ -166,7 +183,7 @@ export default function App(): React.ReactElement {
     StartWork()
     try {
       const Loaded = await window.HybridRef.NewProject()
-      if (Loaded && Session.current === Revision) Reset(Loaded.document, Loaded.path, Loaded.assets)
+      if (Loaded && Session.current === Revision) Reset(Loaded.document, Loaded.path, Loaded.assets, Loaded.missingResources)
     }
     catch (CaughtError) { ShowError(CaughtError) }
     finally { EndWork() }
@@ -180,11 +197,13 @@ export default function App(): React.ReactElement {
     StartWork()
     try {
       const Loaded = await window.HybridRef.Open(ProjectPath)
-      if (Loaded && Session.current === Revision) Reset(Loaded.document, Loaded.path, Loaded.assets)
+      if (Loaded && Session.current === Revision) Reset(Loaded.document, Loaded.path, Loaded.assets, Loaded.missingResources)
     } catch (CaughtError) { ShowError(CaughtError) }
     finally { EndWork() }
   }
   function SaveBoard(SaveAs = false): Promise<boolean> {
+    if (TextComposing.current) return new Promise((Resolve) => { AfterComposition.current.push(() => { void SaveBoard(SaveAs).then(Resolve) }) })
+    CommitText()
     if (WorkingRef.current > PendingSaves.current) return Promise.resolve(false)
     const Snapshot = structuredClone(Current.current)
     const Revision = Session.current
@@ -207,6 +226,37 @@ export default function App(): React.ReactElement {
     return Pending
   }
 
+  function CleanupResources(): Promise<void> {
+    if (TextComposing.current) return new Promise((Resolve) => { AfterComposition.current.push(() => { void CleanupResources().then(Resolve) }) })
+    if (WorkingRef.current || Gesture.current) return Promise.resolve()
+    CommitText()
+    CloseProjectMenu()
+    const Snapshot = structuredClone(Current.current)
+    const Revision = Session.current
+    StartWork()
+    const Pending = SaveQueue.current.then(async () => {
+      try {
+        let Destination = CurrentPath.current
+        if (!Destination) {
+          const Saved = await window.HybridRef.Save(Snapshot, null)
+          if (!Saved || Revision !== Session.current) return
+          Destination = Saved.path
+          CurrentPath.current = Destination; SetPath(Destination)
+          SavedItems.current = Fingerprint(BoardItems(Snapshot))
+          RefreshDirty()
+        }
+        const Result = await window.HybridRef.Cleanup(Snapshot, Destination)
+        if (Revision !== Session.current) return
+        // Zooming while cleanup runs should not move the user back to an earlier viewport.
+        Reset({ ...Result.document, viewport: Current.current.viewport }, Result.path, Result.assets, Result.missingResources)
+        SetMessage(`已清理 ${Result.removedFiles} 个孤儿资源`)
+      } catch (CaughtError) { ShowError(CaughtError) }
+      finally { EndWork() }
+    })
+    SaveQueue.current = Pending
+    return Pending
+  }
+
   function ViewportSize(): { width: number; height: number } {
     return { width: Canvas.current?.clientWidth || window.innerWidth, height: Canvas.current?.clientHeight || window.innerHeight }
   }
@@ -214,23 +264,98 @@ export default function App(): React.ReactElement {
     const Size = ViewportSize()
     return ScreenToWorld({ x: Size.width / 2, y: Size.height / 2 }, Current.current.viewport)
   }
+  function TextDraftItems(): BoardItem[] {
+    const Active = TextEditing.current
+    return BoardItems(Current.current).map((Item) => Active && Item.id === Active.id && 'text' in Item ? { ...Item, text: Active.draft } : Item)
+  }
+  function PublishTextEdit(Next: TextEditSession | null): void {
+    TextEditing.current = Next
+    SetTextEdit(Next)
+    RefreshDirty()
+  }
+  function CommitText(Focus = false): boolean {
+    if (TextComposing.current) { AfterComposition.current.push(() => { CommitText(Focus) }); return false }
+    const Active = TextEditing.current
+    if (!Active) return true
+    const Text = structuredClone(Active.draft)
+    Text.font.family = TextFontFamily
+    const Next = BoardItems(Current.current).map((Item) => Item.id === Active.id && 'text' in Item ? { ...Item, text: Text } : Item)
+    if (Fingerprint(Next) !== Fingerprint(Active.before)) {
+      Past.current.push(Active.before); Future.current = []; SetHistoryVersion((Value) => Value + 1)
+    }
+    PublishItems(Next)
+    PublishTextEdit(null)
+    if (Focus) Canvas.current?.focus()
+    return true
+  }
+  function CancelText(): void {
+    const Active = TextEditing.current
+    if (!Active || TextComposing.current) return
+    PublishItems(Active.before)
+    Select(Selection.current.filter((Id) => Active.before.some((Item) => Item.id === Id)))
+    PublishTextEdit(null)
+    Canvas.current?.focus()
+  }
+  function UpdateText(Resource: TextResource): void {
+    const Active = TextEditing.current
+    if (Active) PublishTextEdit({ ...Active, draft: Resource })
+  }
+  function UpdateTextContent(Content: string): void {
+    const Active = TextEditing.current
+    if (Active) UpdateText({ ...Active.draft, content: Content })
+  }
+  function TextComposition(Composing: boolean): void {
+    if (Composing) { TextComposing.current = true; return }
+    window.setTimeout(() => {
+      TextComposing.current = false
+      const Pending = AfterComposition.current.splice(0)
+      Pending.forEach((Action) => Action())
+    }, 0)
+  }
   function AddText(Content = '文字', Edit = true): void {
-    if (WorkingRef.current || Gesture.current) return
+    if (WorkingRef.current || Gesture.current || !CommitText()) return
     StartupAllowed.current = false
     CloseProjectMenu()
     const Position = Center()
     const Height = Math.min(600, Math.max(160, Content.split('\n').length * 36 + 24))
     const Item: BoardText = { id: Uuid(), x: Position.x - 180, y: Position.y - Height / 2, width: 360, height: Height, text: EmptyTextResource(Content) }
-    Items([...BoardItems(Current.current), Item])
+    const Before = BoardItems(Current.current)
+    if (Edit) {
+      PublishItems([...Before, Item])
+      PublishTextEdit({ id: Item.id, before: Before, draft: structuredClone(Item.text), inline: true, settings: false })
+    } else Items([...Before, Item])
     Select([Item.id])
-    if (Edit) SetEditingId(Item.id)
-    else Canvas.current?.focus()
+    if (!Edit) Canvas.current?.focus()
   }
   function EditText(Id: string): void {
     if (WorkingRef.current || Space.current) return
     Finish()
+    const Active = TextEditing.current
+    if (Active?.id === Id) { PublishTextEdit({ ...Active, inline: true }); return }
+    if (!CommitText()) return
+    const Item = Current.current.texts.find((Item) => Item.id === Id)
+    if (!Item) return
     Select([Id])
-    SetEditingId(Id)
+    PublishTextEdit({ id: Id, before: BoardItems(Current.current), draft: structuredClone(Item.text), inline: true, settings: false })
+  }
+  function OpenTextSettings(Id: string): void {
+    if (WorkingRef.current || Gesture.current) return
+    const Active = TextEditing.current
+    if (Active?.id === Id) {
+      if (!Active.settings) PublishTextEdit({ ...Active, settings: true, settingsBefore: structuredClone(Active.draft) })
+      return
+    }
+    if (!CommitText()) return
+    const Item = Current.current.texts.find((Item) => Item.id === Id)
+    if (!Item) return
+    PublishTextEdit({ id: Id, before: BoardItems(Current.current), draft: structuredClone(Item.text), inline: false, settings: true, settingsBefore: structuredClone(Item.text) })
+  }
+  function CancelTextSettings(): void {
+    const Active = TextEditing.current
+    if (!Active) return
+    if (!Active.inline) { CancelText(); return }
+    PublishTextEdit({ ...Active, settings: false, settingsBefore: undefined, draft: { ...structuredClone(Active.settingsBefore ?? Active.draft), content: Active.draft.content } })
+    Canvas.current?.querySelector<HTMLTextAreaElement>('.text-inline-input')?.focus()
   }
   function DoubleClick(InputEvent: React.MouseEvent): void {
     const Point = ScreenToWorld(LocalPoint(InputEvent.clientX, InputEvent.clientY), Current.current.viewport)
@@ -238,17 +363,6 @@ export default function App(): React.ReactElement {
     const Item = [...Current.current.texts].reverse().find((Item) => Point.x >= Item.x && Point.x <= Item.x + Item.width && Point.y >= Item.y && Point.y <= Item.y + Item.height)
     if (Item) EditText(Item.id)
   }
-  function ApplyText(Resource: TextResource, Save = false, SaveAs = false): void {
-    DraftDirty.current = false
-    const Text = structuredClone(Resource)
-    Text.font.family = Text.font.family.trim() || 'Microsoft YaHei'
-    Items(BoardItems(Current.current).map((Item) => Item.id === EditingId && 'text' in Item ? { ...Item, text: Text } : Item))
-    RefreshDirty()
-    SetEditingId(null)
-    Canvas.current?.focus()
-    if (Save) void SaveBoard(SaveAs)
-  }
-  function CloseTextEditor(): void { DraftDirty.current = false; RefreshDirty(); SetEditingId(null); Canvas.current?.focus() }
   async function AddAssets(Result: ImportResult, Revision: number, Position: Point): Promise<void> {
     if (Revision !== Session.current) return
     await DecodeAssets(Result.assets)
@@ -266,6 +380,8 @@ export default function App(): React.ReactElement {
   }
   async function ImportFiles(Files: File[], Position = Center()): Promise<void> {
     if (WorkingRef.current || !Files.length) return
+    if (TextComposing.current) { AfterComposition.current.push(() => { void ImportFiles(Files, Position) }); return }
+    CommitText()
     StartupAllowed.current = false
     const Revision = Session.current
     StartWork()
@@ -286,22 +402,44 @@ export default function App(): React.ReactElement {
     await ImportFiles(Files, Position)
   }
   function DeleteSelected(): void {
+    if (WorkingRef.current) return
     const Ids = new Set(Selection.current)
     Items(BoardItems(Current.current).filter((Item) => !Ids.has(Item.id)))
     Select([])
   }
   function Copy(InputEvent: ClipboardEvent, Cut = false): void {
-    const SelectedImages = BoardItems(Current.current).filter((Item) => Selection.current.includes(Item.id))
-    if (!SelectedImages.length || !InputEvent.clipboardData) return
-    InternalClipboard.current = structuredClone(SelectedImages)
+    const SelectedItems = TextDraftItems().filter((Item) => Selection.current.includes(Item.id))
+    if (!SelectedItems.length) return
+    InputEvent.preventDefault()
+    if (Copying.current || WorkingRef.current || Gesture.current) return
+    if (!Cut) { void CopySnapshot(structuredClone(SelectedItems)); return }
+    if (!InputEvent.clipboardData) return
+    InternalClipboard.current = structuredClone(SelectedItems)
     ClipboardToken.current = `hybridref:${Uuid()}`
     PasteOffset.current = 0
     InputEvent.clipboardData.setData(ClipboardType, ClipboardToken.current)
     InputEvent.clipboardData.setData('text/plain', ClipboardToken.current)
-    InputEvent.preventDefault()
-    if (Cut) DeleteSelected()
+    DeleteSelected()
+  }
+  async function CopySnapshot(SelectedItems: BoardItem[]): Promise<void> {
+    const Revision = Session.current
+    Copying.current = true
+    SetMessage('正在生成 PNG 快照…')
+    try {
+      if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') throw new Error('当前浏览器不支持图片剪贴板，请使用 Edge 打开本地应用')
+      const Png = CreateSelectionSnapshot(SelectedItems, AssetMap.current, getComputedStyle(Canvas.current!).backgroundColor)
+      // Consume rejection even if ClipboardItem construction/write fails before reading the promise.
+      void Png.catch(() => {})
+      // Start the clipboard write within the copy gesture; supply asynchronous pixels as a promise.
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': Png })])
+      if (Revision !== Session.current) return
+      SetMessage('已复制选中元素的 PNG 快照')
+    } catch (CaughtError) {
+      if (Revision === Session.current) SetMessage(`复制快照失败：${CaughtError instanceof Error ? CaughtError.message : String(CaughtError)}`)
+    } finally { Copying.current = false }
   }
   function InsertCopies(Source: BoardItem[], Offset: number): void {
+    if (WorkingRef.current) return
     const Copies = Source.filter((Item) => 'text' in Item || AssetMap.current[Item.asset]).map((Item) => ({ ...structuredClone(Item), id: Uuid(), x: Item.x + Offset, y: Item.y + Offset }))
     if (!Copies.length) return
     Items([...BoardItems(Current.current), ...Copies])
@@ -310,15 +448,17 @@ export default function App(): React.ReactElement {
   function Paste(InputEvent: ClipboardEvent): void {
     const Content = InputEvent.clipboardData
     if (!Content) return
-    const Files = Array.from(Content.files).filter((FileValue) => FileValue.type.startsWith('image/'))
-    if (Files.length) { InputEvent.preventDefault(); void ImportFiles(Files); return }
     const Token = Content.getData(ClipboardType) || Content.getData('text/plain')
     if (Token && Token === ClipboardToken.current) {
       InputEvent.preventDefault()
       if (WorkingRef.current) return
       PasteOffset.current += 24
       InsertCopies(InternalClipboard.current, PasteOffset.current)
-    } else if (Content.getData('text/plain') && !Token.startsWith('hybridref:')) {
+      return
+    }
+    const Files = Array.from(Content.files).filter((FileValue) => FileValue.type.startsWith('image/'))
+    if (Files.length) { InputEvent.preventDefault(); void ImportFiles(Files); return }
+    if (Content.getData('text/plain') && !Token.startsWith('hybridref:')) {
       InputEvent.preventDefault()
       AddText(Content.getData('text/plain'), false)
     }
@@ -353,7 +493,7 @@ export default function App(): React.ReactElement {
     return { x: ClientX - Rect.left, y: ClientY - Rect.top }
   }
   function Begin(InputEvent: React.PointerEvent, ImageId?: string, Corner?: ResizeCorner): void {
-    if (EditingId || WorkingRef.current) return
+    if (WorkingRef.current || !CommitText()) return
     if (InputEvent.button !== 0 && InputEvent.button !== 1) return
     InputEvent.preventDefault()
     InputEvent.stopPropagation()
@@ -432,12 +572,21 @@ export default function App(): React.ReactElement {
   UseEffect(() => {
     const Revision = Session.current
     void window.HybridRef.Startup().then((Loaded: LoadedBoard | null) => {
-      if (Loaded && StartupAllowed.current && Session.current === Revision) Reset(Loaded.document, Loaded.path, Loaded.assets)
+      if (Loaded && StartupAllowed.current && Session.current === Revision) Reset(Loaded.document, Loaded.path, Loaded.assets, Loaded.missingResources)
     }).catch(ShowError).finally(EndWork)
   }, [])
   UseEffect(() => {
     window.document.title = `${Dirty ? '* ' : ''}${Path?.split(/[\\/]/).pop() || '未命名'} — HybridRef`
   }, [Path, Dirty])
+  UseEffect(() => {
+    const OutsideText = (InputEvent: PointerEvent): void => {
+      if (!TextEditing.current || !(InputEvent.target instanceof HTMLElement)) return
+      if (InputEvent.target.closest('.text-inline-input, .text-editor, .text-settings-button')) return
+      CommitText()
+    }
+    window.addEventListener('pointerdown', OutsideText, true)
+    return () => window.removeEventListener('pointerdown', OutsideText, true)
+  }, [])
   UseEffect(() => {
     if (!ProjectMenuOpen) return
     const Revision = ++ProjectMenuRevision.current
@@ -461,7 +610,7 @@ export default function App(): React.ReactElement {
   UseEffect(() => {
     const Element = Canvas.current!
     const Wheel = (InputEvent: WheelEvent) => {
-      if (EditingId) return
+      if (InputEvent.target instanceof HTMLElement && InputEvent.target.closest('.text-editor, .text-inline-input')) return
       InputEvent.preventDefault()
       const Point = LocalPoint(InputEvent.clientX, InputEvent.clientY)
       const Scale = Math.exp(-InputEvent.deltaY * (InputEvent.deltaMode === 1 ? 0.025 : 0.0015))
@@ -469,13 +618,19 @@ export default function App(): React.ReactElement {
     }
     Element.addEventListener('wheel', Wheel, { passive: false })
     return () => Element.removeEventListener('wheel', Wheel)
-  }, [EditingId])
+  }, [])
   UseEffect(() => {
     const EditingText = (Target: EventTarget | null): boolean => IsFileDialogOpen() || Target instanceof HTMLInputElement || Target instanceof HTMLTextAreaElement || Target instanceof HTMLSelectElement || Boolean((Target as HTMLElement)?.isContentEditable)
     const Down = (InputEvent: KeyboardEvent) => {
-      if (EditingId || EditingText(InputEvent.target)) return
+      if (EditingText(InputEvent.target)) return
       const Modifier = InputEvent.ctrlKey || InputEvent.metaKey
       const Key = InputEvent.key.toLowerCase()
+      if (TextEditing.current) {
+        if (Modifier && Key === 's') { InputEvent.preventDefault(); void SaveBoard(InputEvent.shiftKey) }
+        else if (Modifier && Key === 'enter') { InputEvent.preventDefault(); CommitText(true) }
+        else if (Key === 'escape') { InputEvent.preventDefault(); CancelText() }
+        return
+      }
       if (ProjectMenuOpen) {
         if (Key === 'escape' || (Modifier && Key === 'o')) { InputEvent.preventDefault(); CloseProjectMenu(true) }
         return
@@ -496,9 +651,9 @@ export default function App(): React.ReactElement {
     }
     const Up = (InputEvent: KeyboardEvent) => { if (InputEvent.code === 'Space') { Space.current = false; SetSpaceHeld(false) } }
     const Blur = () => { Space.current = false; SetSpaceHeld(false); Finish(undefined, true) }
-    const Copied = (InputEvent: ClipboardEvent) => { if (!EditingId && !ProjectMenuOpen && !EditingText(InputEvent.target)) Copy(InputEvent) }
-    const Cut = (InputEvent: ClipboardEvent) => { if (!EditingId && !ProjectMenuOpen && !EditingText(InputEvent.target)) Copy(InputEvent, true) }
-    const Pasted = (InputEvent: ClipboardEvent) => { if (!EditingId && !ProjectMenuOpen && !EditingText(InputEvent.target)) Paste(InputEvent) }
+    const Copied = (InputEvent: ClipboardEvent) => { if (!TextEditing.current?.inline && !ProjectMenuOpen && !EditingText(InputEvent.target)) Copy(InputEvent) }
+    const Cut = (InputEvent: ClipboardEvent) => { if (!TextEditing.current && !ProjectMenuOpen && !EditingText(InputEvent.target)) Copy(InputEvent, true) }
+    const Pasted = (InputEvent: ClipboardEvent) => { if (!TextEditing.current && !ProjectMenuOpen && !EditingText(InputEvent.target)) Paste(InputEvent) }
     window.addEventListener('keydown', Down); window.addEventListener('keyup', Up); window.addEventListener('blur', Blur)
     window.addEventListener('copy', Copied); window.addEventListener('cut', Cut); window.addEventListener('paste', Pasted)
     return () => {
@@ -508,8 +663,9 @@ export default function App(): React.ReactElement {
   })
 
   const Bounds = BoundingBox(BoardItems(Document).filter((Item) => Selected.includes(Item.id)))
-  const Editing = Document.texts.find((Item) => Item.id === EditingId)
+  const SelectedText = Selected.length === 1 ? Document.texts.find((Item) => Item.id === Selected[0]) : undefined
   const View = Document.viewport
+  const SettingsSize = SelectedText ? Math.min(64, Math.max(20, Math.min(SelectedText.width, SelectedText.height) * View.zoom * 0.32)) : 0
   const SelectionStyle = Bounds ? { left: View.x + Bounds.x * View.zoom, top: View.y + Bounds.y * View.zoom, width: Bounds.width * View.zoom, height: Bounds.height * View.zoom } : undefined
   return <div className="app" data-history-version={HistoryVersion}>
     <header className="toolbar">
@@ -527,7 +683,7 @@ export default function App(): React.ReactElement {
         </div>}
       </div>
       <button data-testid="save" className="save-button" aria-label={Dirty ? '保存（有未保存的修改）' : '保存'} disabled={Working > PendingSaves.current} title="保存 · Ctrl+S / 另存为 · Ctrl+Shift+S" onClick={() => void SaveBoard()}>保存{Dirty && <span className="save-dirty" aria-hidden="true">*</span>}</button>
-      <button data-testid="add-text" disabled={Working > 0} title="创建文字，双击文字可再次编辑" onClick={() => AddText()}>文本</button>
+      <button data-testid="cleanup-resources" disabled={Working > 0} title="保存当前画板，并清理资源目录中未被引用的 PNG / YAML 文件" onClick={() => void CleanupResources()}>清理失效资源</button>
       <span className="filename" title={Path || undefined}>{Path?.split(/[\\/]/).pop() || '未命名画板'}</span>
       {Working > 0 && <span className="working" role="status">处理中…</span>}
     </header>
@@ -537,17 +693,29 @@ export default function App(): React.ReactElement {
       onContextMenu={(InputEvent) => InputEvent.preventDefault()} onDragOver={(InputEvent) => { InputEvent.preventDefault(); InputEvent.dataTransfer.dropEffect = 'copy' }} onDrop={(InputEvent) => void Drop(InputEvent)}>
       <div className="world" style={{ transform: `translate(${View.x}px, ${View.y}px) scale(${View.zoom})` }}>
         {Document.images.map((Item) => <img key={Item.id} data-testid="image-item" data-image-id={Item.id} data-asset-id={Item.asset} data-x={Item.x} data-y={Item.y} data-width={Item.width} data-height={Item.height}
-          className={Selected.includes(Item.id) ? 'board-image selected' : 'board-image'} src={Assets[Item.asset]?.dataUrl} alt="参考图片" draggable={false}
+          className={`board-image${Selected.includes(Item.id) ? ' selected' : ''}${Assets[Item.asset]?.missing ? ' missing' : ''}`} data-missing={Assets[Item.asset]?.missing || undefined}
+          src={Assets[Item.asset]?.dataUrl} alt={Assets[Item.asset]?.missing ? '纹理引用丢失' : '参考图片'} title={Assets[Item.asset]?.missing ? '纹理引用丢失；请手动检查 .hbr 中对应的引用' : undefined} draggable={false}
           style={{ left: Item.x, top: Item.y, width: Item.width, height: Item.height, outlineWidth: 1 / View.zoom }} onPointerDown={(InputEvent) => Begin(InputEvent, Item.id)} />)}
-        {Document.texts.map((Item) => <div key={Item.id} data-testid="text-item" data-text-id={Item.id} data-x={Item.x} data-y={Item.y} data-width={Item.width} data-height={Item.height}
-          className={Selected.includes(Item.id) ? 'board-text selected' : 'board-text'} title="双击编辑文字；拖动角点调整文本框，字号保持不变"
-          style={{ left: Item.x, top: Item.y, width: Item.width, height: Item.height, outlineWidth: 1 / View.zoom,
-            padding: Item.text.padding, fontFamily: Item.text.font.family, fontSize: Item.text.font.size, fontWeight: Item.text.font.weight,
-            color: TextColor(Item.text.font.color, Item.text.font.opacity), backgroundColor: TextColor(Item.text.background.color, Item.text.background.opacity),
-            textAlign: Item.text.paragraph.align, lineHeight: Item.text.paragraph.lineHeight }}
-          onPointerDown={(InputEvent) => Begin(InputEvent, Item.id)}>{Item.text.content}</div>)}
+        {Document.texts.map((Item) => {
+          const Active = TextEdit?.id === Item.id ? TextEdit : null
+          const Text = Active?.draft ?? Item.text
+          return <div key={Item.id} data-testid="text-item" data-text-id={Item.id} data-x={Item.x} data-y={Item.y} data-width={Item.width} data-height={Item.height}
+            className={`board-text${Selected.includes(Item.id) ? ' selected' : ''}${Active?.inline ? ' editing' : ''}`} title={Active?.inline ? undefined : '双击直接编辑文字；拖动角点调整文本框'}
+            style={{ left: Item.x, top: Item.y, width: Item.width, height: Item.height, outlineWidth: 1 / View.zoom,
+              ...TextAppearance(Text) }} onPointerDown={(InputEvent) => Begin(InputEvent, Item.id)}>
+            {Active?.inline ? <TextInlineInput Content={Text.content} OnChange={UpdateTextContent} OnApply={() => CommitText(true)} OnCancel={CancelText}
+              OnSave={(SaveAs) => { void SaveBoard(SaveAs) }} OnComposition={TextComposition} /> : Text.content}
+          </div>
+        })}
       </div>
-      {!Document.images.length && !Document.texts.length && <div className="empty"><span>拖入图片，开始整理参考</span><small>Ctrl+V 粘贴截图或文字 · 点击「文本」添加说明</small></div>}
+      <div className="canvas-tools" onPointerDown={(InputEvent) => InputEvent.stopPropagation()} onDoubleClick={(InputEvent) => InputEvent.stopPropagation()}>
+        <button className="canvas-tool" data-testid="add-text" disabled={Working > 0} aria-label="创建文本" title="创建文本" onClick={() => AddText()}><TextCreateIcon /></button>
+      </div>
+      {SelectedText && <button data-testid="text-settings" className="text-settings-button" aria-label="字体设置" title="字体设置" disabled={Working > 0}
+        aria-expanded={Boolean(TextEdit?.settings)} style={{ left: View.x + (SelectedText.x + SelectedText.width) * View.zoom + 10, top: View.y + (SelectedText.y + SelectedText.height) * View.zoom - SettingsSize, width: SettingsSize, height: SettingsSize }}
+        onPointerDown={(InputEvent) => { InputEvent.stopPropagation(); InputEvent.preventDefault() }} onDoubleClick={(InputEvent) => InputEvent.stopPropagation()} onClick={() => OpenTextSettings(SelectedText.id)}><TextSettingsIcon /></button>}
+      {TextEdit?.settings && <TextEditor Resource={TextEdit.draft} OnChange={UpdateText} OnApply={() => CommitText(true)} OnSave={(SaveAs) => { void SaveBoard(SaveAs) }} OnCancel={CancelTextSettings} OnComposition={TextComposition} />}
+      {!Document.images.length && !Document.texts.length && <div className="empty"><span>拖入图片，开始整理参考</span><small>Ctrl+V 粘贴截图或文字 · 点击左侧图标添加文本</small></div>}
       {Bounds && <div data-testid="selection-box" className="selection-box" style={SelectionStyle}>
         {(['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((Corner) => <button key={Corner} data-testid={`resize-${Corner}`} className={`resize-handle ${Corner}`} aria-label={`调整尺寸 ${Corner}`} onPointerDown={(InputEvent) => Begin(InputEvent, undefined, Corner)} />)}
       </div>}
@@ -563,6 +731,5 @@ export default function App(): React.ReactElement {
       <button data-testid="zoom-in" aria-label="放大" onClick={() => ChangeZoom(View.zoom * 1.2)}>＋</button>
       <button data-testid="fit" title="适应画板 · F" onClick={Fit}>适应</button>
     </footer>
-    {Editing && <TextEditor key={Editing.id} Resource={Editing.text} OnApply={(Resource) => ApplyText(Resource)} OnSave={(Resource, SaveAs) => ApplyText(Resource, true, SaveAs)} OnCancel={CloseTextEditor} OnDirty={(Dirty) => { DraftDirty.current = Dirty; RefreshDirty() }} />}
   </div>
 }

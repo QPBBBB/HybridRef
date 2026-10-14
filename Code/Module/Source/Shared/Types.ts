@@ -11,8 +11,9 @@ export interface TextResource {
 }
 export interface BoardText { id: string; x: number; y: number; width: number; height: number; text: TextResource }
 export interface BoardDocument { format: 'hybridref'; formatVersion: 3; viewport: Viewport; images: BoardImage[]; texts: BoardText[] }
-export interface ImageAsset { id: string; dataUrl: string; width: number; height: number }
-export interface LoadedBoard { path: string; document: BoardDocument; assets: ImageAsset[] }
+export interface ImageAsset { id: string; dataUrl: string; width: number; height: number; missing?: boolean }
+export interface LoadedBoard { path: string; document: BoardDocument; assets: ImageAsset[]; missingResources?: string[] }
+export interface CleanupResult extends LoadedBoard { removedFiles: number }
 export interface ImportResult { assets: ImageAsset[]; errors: string[] }
 export interface SaveResult { path: string }
 export interface ProjectEntry { name: string; path: string }
@@ -24,12 +25,14 @@ export interface HybridRefApi {
   ListProjects(): Promise<ProjectEntry[]>
   Open(Path: string): Promise<LoadedBoard>
   Save(Document: BoardDocument, Path: string | null): Promise<SaveResult | null>
+  Cleanup(Document: BoardDocument, Path: string): Promise<CleanupResult>
   ImportBytes(Files: { name: string; bytes: Uint8Array }[]): Promise<ImportResult>
   SetDirty(Dirty: boolean): void
 }
+export const TextFontFamily = 'SimHei'
 export const EmptyTextResource = (Content = '文字'): TextResource => ({
   format: 'hybridref-text', formatVersion: 1, content: Content,
-  font: { family: 'Microsoft YaHei', size: 24, weight: 400, color: '#FFFFFF', opacity: 1 },
+  font: { family: TextFontFamily, size: 24, weight: 400, color: '#FFFFFF', opacity: 1 },
   background: { color: '#202020', opacity: 0.8 },
   paragraph: { align: 'left', lineHeight: 1.5 }, padding: 12,
 })

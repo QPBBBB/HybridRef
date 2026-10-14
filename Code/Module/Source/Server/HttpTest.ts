@@ -1,5 +1,5 @@
 import { randomUUID as RandomUUID } from 'node:crypto'
-import { existsSync as ExistsSync, mkdtempSync as MkdtempSync, mkdirSync as MkdirSync, readFileSync as ReadFileSync, readdirSync as ReaddirSync, rmSync as RmSync, symlinkSync as SymlinkSync, writeFileSync as WriteFileSync } from 'node:fs'
+import { existsSync as ExistsSync, mkdtempSync as MkdtempSync, mkdirSync as MkdirSync, readFileSync as ReadFileSync, readdirSync as ReaddirSync, rmSync as RmSync, symlinkSync as SymlinkSync, unlinkSync as UnlinkSync, writeFileSync as WriteFileSync } from 'node:fs'
 import { request as Request, type Server } from 'node:http'
 import { tmpdir as Tmpdir } from 'node:os'
 import { join as Join, resolve as Resolve } from 'node:path'
@@ -80,7 +80,7 @@ Describe('local browser HTTP server', () => {
     Expect((await Call('/api/new', { name: 'TextProject', document: Document })).status).toBe(200)
     const Stored = Parse(ReadFileSync(Path, 'utf8'))
     Expect(Stored.texts[0]).not.toHaveProperty('text')
-    Expect(Stored.texts[0].asset).toMatch(/^TextProjectResource\/Text_note-1_[a-f0-9]{16}\.yaml$/)
+    Expect(Stored.texts[0].asset).toMatch(/^TextProjectResource\/Text_[A-F0-9]{16}_[A-F0-9]{8}\.yaml$/)
     Expect(Parse(ReadFileSync(Join(ProjectDirectory, 'TextProject', Stored.texts[0].asset), 'utf8'))).toEqual(Document.texts[0].text)
     const OtherTab = RandomUUID()
     const Opened = await Call('/api/open', { path: Path }, { session: OtherTab })
@@ -90,6 +90,8 @@ Describe('local browser HTTP server', () => {
     Document.texts[0].text.content = '保存修改'
     Document.texts[0].text.background.opacity = 0.25
     Expect((await Call('/api/save', { path: Path, document: Document }, { session: OtherTab })).status).toBe(200)
+    Expect(ExistsSync(Join(ProjectDirectory, 'TextProject', Stored.texts[0].asset))).toBe(false)
+    Expect(ReaddirSync(Join(ProjectDirectory, 'TextProject', 'TextProjectResource'))).toHaveLength(1)
     Expect((await Call('/api/open', { path: Path })).body.document).toEqual(Document)
     Document.texts[0].text.font.opacity = 2
     const Invalid = await Call('/api/save', { path: Path, document: Document })
@@ -114,6 +116,85 @@ Describe('local browser HTTP server', () => {
     WriteFileSync(Join(ProjectDirectory, 'secret.txt'), 'private content')
     Expect((await Call('/Project/secret.txt')).status).toBe(404)
     Expect((await Call('/api/not-an-api')).status).toBe(404)
+  })
+
+  It('cleans orphan files while retaining missing references, live edits and later resource recovery', async () => {
+    const { call: Call, projectDirectory: ProjectDirectory } = await App()
+    const Imported = await Call('/api/import', { files: [{ name: 'missing.jpg', data: await Jpeg() }] })
+    const Document: BoardDocument = {
+      ...ImageBoard(Imported.body.assets[0].id),
+      texts: [
+        { id: 'keep-text', x: 40, y: 90, width: 300, height: 180, text: EmptyTextResource('保留内容') },
+        { id: 'missing-text', x: 400, y: 90, width: 300, height: 180, text: EmptyTextResource('丢失内容') },
+      ],
+    }
+    Expect((await Call('/api/new', { name: 'Cleanup', document: Document })).status).toBe(200)
+    const Directory = Join(ProjectDirectory, 'Cleanup')
+    const Path = Join(Directory, 'Cleanup.hbr')
+    const ResourceDirectory = Join(Directory, 'CleanupResource')
+    const Stored = Parse(ReadFileSync(Path, 'utf8'))
+    const MissingImageBytes = ReadFileSync(Join(Directory, Stored.images[0].asset))
+    const MissingTextBytes = ReadFileSync(Join(Directory, Stored.texts[1].asset))
+    UnlinkSync(Join(Directory, Stored.images[0].asset))
+    UnlinkSync(Join(Directory, Stored.texts[1].asset))
+    WriteFileSync(Join(ResourceDirectory, 'Orphan.png'), Buffer.from('unreferenced image'))
+    WriteFileSync(Join(ResourceDirectory, 'Orphan.yaml'), 'unreferenced text')
+    const Before = ReadFileSync(Path, 'utf8')
+    const BeforeFiles = ReaddirSync(ResourceDirectory).sort()
+    const OtherTab = RandomUUID()
+    const Unopened = await Call('/api/cleanup', { path: Path, document: Document }, { session: OtherTab })
+    Expect(Unopened.status).toBe(400)
+    Expect(ReadFileSync(Path, 'utf8')).toBe(Before)
+    Expect(ReaddirSync(ResourceDirectory).sort()).toEqual(BeforeFiles)
+
+    const Opened = await Call('/api/open', { path: Path }, { session: OtherTab })
+    Expect(Opened.status).toBe(200)
+    Expect(Opened.body.missingResources).toHaveLength(2)
+    Expect(Opened.body.document.images[0]).toMatchObject({ id: 'image-1', x: 25, y: -10, width: 120, height: 80 })
+    Expect(Opened.body.assets[0]).toMatchObject({ missing: true })
+    Expect(Opened.body.document.texts).toHaveLength(1)
+    Expect(Opened.body.document.texts[0].id).toBe('keep-text')
+    Expect(ReadFileSync(Path, 'utf8')).toBe(Before)
+    Expect((await Call('/api/new', { name: 'OtherProject' })).status).toBe(200)
+    const OtherPath = Join(ProjectDirectory, 'OtherProject', 'OtherProject.hbr')
+    const OtherBefore = ReadFileSync(OtherPath, 'utf8')
+    Expect((await Call('/api/cleanup', { path: OtherPath, document: Opened.body.document }, { session: OtherTab })).status).toBe(400)
+    Expect(ReadFileSync(OtherPath, 'utf8')).toBe(OtherBefore)
+    const Invalid = await Call('/api/cleanup', { path: Path, document: null }, { session: OtherTab })
+    Expect(Invalid.status).toBe(400)
+    Expect(ReadFileSync(Path, 'utf8')).toBe(Before)
+    Expect(ReaddirSync(ResourceDirectory).sort()).toEqual(BeforeFiles)
+
+    Opened.body.document.texts[0].text.content = '清理时保存的修改'
+    const Cleaned = await Call('/api/cleanup', { path: Path, document: Opened.body.document }, { session: OtherTab })
+    Expect(Cleaned.status).toBe(200)
+    Expect(Cleaned.body).not.toHaveProperty('removedReferences')
+    Expect(Cleaned.body.removedFiles).toBeGreaterThanOrEqual(2)
+    Expect(Cleaned.body.document.images).toEqual(Opened.body.document.images)
+    Expect(Cleaned.body.assets).toHaveLength(1)
+    Expect(Cleaned.body.assets[0].missing).toBe(true)
+    Expect(Cleaned.body.missingResources).toHaveLength(2)
+    Expect(Cleaned.body.document.texts[0].text.content).toBe('清理时保存的修改')
+    const Saved = Parse(ReadFileSync(Path, 'utf8'))
+    Expect(Saved.images).toEqual(Stored.images)
+    Expect(Saved.texts).toHaveLength(2)
+    Expect(Saved.texts.find((Item: { id: string }) => Item.id === 'missing-text')).toEqual(Stored.texts[1])
+    Expect(ReaddirSync(ResourceDirectory)).toEqual([Saved.texts[0].asset.split('/').pop()])
+    Expect(Parse(ReadFileSync(Join(Directory, Saved.texts[0].asset), 'utf8')).content).toBe('清理时保存的修改')
+    const Repeated = await Call('/api/cleanup', { path: Path, document: Cleaned.body.document }, { session: OtherTab })
+    Expect(Repeated.status).toBe(200)
+    Expect(Repeated.body.removedFiles).toBe(0)
+    Expect(Repeated.body.missingResources).toHaveLength(2)
+    WriteFileSync(Join(Directory, Stored.images[0].asset), MissingImageBytes)
+    WriteFileSync(Join(Directory, Stored.texts[1].asset), MissingTextBytes)
+    const Recovered = await Call('/api/cleanup', { path: Path, document: Repeated.body.document }, { session: OtherTab })
+    Expect(Recovered.status).toBe(200)
+    Expect(Recovered.body.assets[0].missing).toBeUndefined()
+    Expect(Recovered.body.document.texts).toHaveLength(2)
+    Expect(Recovered.body.document.texts[1].text.content).toBe('丢失内容')
+    Expect(Recovered.body.missingResources ?? []).toEqual([])
+    Expect(Recovered.body.removedFiles).toBe(0)
+    Expect((await Call('/api/open', { path: Path })).body.document).toEqual(Recovered.body.document)
   })
 
   It('round-trips PNG assets through real HTTP with isolated tab caches and local YAML saving', async () => {
@@ -216,7 +297,7 @@ Describe('local browser HTTP server', () => {
     Expect(Created.status).toBe(200)
     Expect(Created.body).toEqual({ path: Path })
     const Saved = Parse(ReadFileSync(Path, 'utf8')) as BoardDocument
-    Expect(Saved.images[0].asset).toMatch(/^FirstResource\/[0-9]+_[0-9A-F]{8}\.png$/)
+    Expect(Saved.images[0].asset).toMatch(/^FirstResource\/Texture_[0-9A-F]{16}_[0-9A-F]{8}\.png$/)
     Expect(ExistsSync(Join(ProjectDirectory, 'First', Saved.images[0].asset))).toBe(true)
     Expect(ReaddirSync(Join(ProjectDirectory, 'First', 'FirstResource'))).toHaveLength(1)
     const Loaded = await Call('/api/open', { path: Path }, { session: RandomUUID() })

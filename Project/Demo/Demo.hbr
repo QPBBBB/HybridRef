@@ -1,37 +1,44 @@
 format: "hybridref"
-formatVersion: 2
+formatVersion: 3
 viewport:
-  x: 166.5203
-  y: 369.8633
+  x: 162.6486
+  y: 287.9342
   zoom: 0.3499
 images:
   - id: "bf4658c9-bb2e-4f24-8aa9-c71f2e45a3e9"
-    asset: "DemoResource/1791880380524_9D532DBC.png"
-    x: -111.2905
-    y: -106.2109
-    width: 800
-    height: 655.6656
+    asset: "DemoResource/Texture_0E262CB57B217EA9_9D532DBC.png"
+    x: 1009.1867
+    y: 219.2726
+    width: 1000.9544
+    height: 820.3642
   - id: "96ac16ab-5a9e-4fb3-a0d9-dfbbadc90a49"
-    asset: "DemoResource/1791880405410_C8055929.png"
-    x: 688.7095
-    y: -106.2109
-    width: 800
-    height: 685.7143
+    asset: "DemoResource/Texture_AEB94D40D6B835AA_C8055929.png"
+    x: 2010.1411
+    y: 341.0064
+    width: 673.0461
+    height: 576.8967
   - id: "95f1a045-f433-4f9b-ae08-c48734a5195d"
-    asset: "DemoResource/1791882545665_4F84EACF.png"
-    x: 1488.7095
-    y: -106.2109
-    width: 800
-    height: 360
+    asset: "DemoResource/Texture_B9F71B7B24C65858_4F84EACF.png"
+    x: 2683.1872
+    y: 341.0064
+    width: 1281.9926
+    height: 576.8967
   - id: "776f413c-aeec-41a1-9ea0-31b9e9109b13"
-    asset: "DemoResource/1791882686743_B472154F.png"
-    x: 2288.7095
-    y: -106.2109
-    width: 715.0183
-    height: 800
+    asset: "DemoResource/Texture_A2F04EC1E4FD257B_B472154F.png"
+    x: 3965.1797
+    y: 341.0064
+    width: 515.6146
+    height: 576.8967
   - id: "941be58b-2f01-4ed4-a62f-4c443ef1dcb5"
-    asset: "DemoResource/1791882689128_70002B23.png"
-    x: 3003.7278
-    y: -106.2109
-    width: 715.0183
-    height: 800
+    asset: "DemoResource/Texture_71C8054F0DE79C90_70002B23.png"
+    x: 4480.7943
+    y: 341.0064
+    width: 515.6146
+    height: 576.8967
+texts:
+  - id: "794b836e-1216-416a-ba28-79aa440b53e4"
+    asset: "DemoResource/Text_3ECDCA4D79B84B8A_4B2CE053.yaml"
+    x: 1009.1867
+    y: 4.0213
+    width: 360
+    height: 160

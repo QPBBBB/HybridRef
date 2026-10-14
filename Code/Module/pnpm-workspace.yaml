@@ -8,3 +8,5 @@ verifyDepsBeforeRun: false
 pmOnFail: ignore
 updateNotifier: false
 confirmModulesPurge: false
+# Unit tests run in Node; browser tests use the installed Edge.
+autoInstallPeers: false

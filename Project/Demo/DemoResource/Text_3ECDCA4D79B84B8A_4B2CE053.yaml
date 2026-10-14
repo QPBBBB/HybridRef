@@ -1,0 +1,16 @@
+format: "hybridref-text"
+formatVersion: 1
+content: "文字"
+font:
+  family: "SimHei"
+  size: 24
+  weight: 400
+  color: "#FFFFFF"
+  opacity: 1
+background:
+  color: "#202020"
+  opacity: 0.8
+paragraph:
+  align: "left"
+  lineHeight: 1.5
+padding: 12

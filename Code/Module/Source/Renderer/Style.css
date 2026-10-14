@@ -27,8 +27,21 @@ button:disabled { color: #595d64; cursor: default; }
 .canvas:active.can-pan { cursor: grabbing; }
 .world { position: absolute; width: 0; height: 0; transform-origin: 0 0; }
 .board-image { position: absolute; display: block; max-width: none; object-fit: fill; -webkit-user-drag: none; cursor: default; }
+.board-image.missing { object-fit: contain; object-position: center; filter: brightness(0) invert(79%) sepia(18%) saturate(336%) hue-rotate(172deg); }
 .board-image.selected, .board-text.selected { outline-style: solid; outline-color: #a7c6ee; }
 .board-text { position: absolute; white-space: pre-wrap; overflow-wrap: anywhere; overflow: hidden; cursor: default; }
+.board-text.editing { cursor: text; user-select: text; }
+.text-inline-input { display: block; width: 100%; height: 100%; min-width: 0; min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 0; outline: none; resize: none; background: transparent; color: inherit; caret-color: #bed9fa; font: inherit; line-height: inherit; text-align: inherit; letter-spacing: inherit; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; cursor: text; scrollbar-width: none; }
+.text-inline-input::selection { background: #79a8df55; }
+.canvas-tools { position: absolute; top: 12px; left: 10px; z-index: 4; }
+.canvas-tool, .text-settings-button { color: rgb(124 180 246 / 45%); }
+.canvas-tool { display: grid; place-items: center; width: 40px; height: 40px; padding: 7px; border-radius: 5px; background: #17223333; }
+.canvas-tool:hover:not(:disabled), .text-settings-button:hover:not(:disabled), .text-settings-button[aria-expanded=true] { color: rgb(155 202 255 / 85%); background: #22375266; }
+.canvas-tool:disabled { opacity: .35; }
+.tool-icon { display: block; width: 100%; height: 100%; pointer-events: none; background-color: currentColor; mask-repeat: no-repeat; mask-position: center; mask-size: contain; }
+.text-create-icon { mask-image: url('../../../Resource/Icons/TextCreate.svg'); }
+.text-settings-icon { mask-image: url('../../../Resource/Icons/TextSettings.svg'); }
+.text-settings-button { position: absolute; display: grid; place-items: center; z-index: 4; padding: 3px; border-radius: 5px; }
 .selection-box { position: absolute; border: 1px solid #82afea; pointer-events: none; }
 .resize-handle { pointer-events: auto; position: absolute; width: 9px; height: 9px; padding: 0; background: #e9eef6; border: 1px solid #719aca; border-radius: 1px; z-index: 1; }
 .resize-handle:hover:not(:disabled) { background: #fff; }
@@ -68,19 +81,23 @@ button:disabled { color: #595d64; cursor: default; }
 .new-project-dialog { width: min(520px, 94vw); }
 .file-project-path { margin: 0; color: #8d96a5; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
 .file-project-path span { color: #bac7d9; }
-.text-editor-overlay { position: fixed; inset: 0; z-index: 15; display: flex; justify-content: flex-end; background: #0005; }
-.text-editor { width: min(390px, 100vw); height: 100%; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; background: #1a1c21; border-left: 1px solid #3a3d44; box-shadow: -12px 0 40px #0006; user-select: text; }
+.text-editor { position: absolute; z-index: 6; top: 16px; right: 16px; width: min(326px, calc(100% - 72px)); max-height: calc(100% - 32px); overflow-y: auto; overscroll-behavior: contain; padding: 18px; display: flex; flex-direction: column; gap: 16px; background: #1a1c21; border: 1px solid #3a3d44; border-radius: 9px; box-shadow: 0 12px 36px #0006; user-select: text; }
 .text-editor-heading { display: flex; align-items: center; justify-content: space-between; }
 .text-editor h2 { margin: 0; font-size: 17px; color: #edf0f5; font-weight: 500; }
 .text-editor-heading button { font-size: 22px; line-height: 1; padding: 3px 8px; }
-.text-editor label { display: flex; flex-direction: column; gap: 7px; color: #9da6b5; font-size: 12px; }
-.text-editor input, .text-editor textarea, .text-editor select { width: 100%; min-width: 0; border: 1px solid #3a3d46; border-radius: 4px; background: #101216; color: #e1e6ee; padding: 7px 9px; font: inherit; outline: none; }
-.text-editor input:focus, .text-editor textarea:focus, .text-editor select:focus { border-color: #87b7f2; }
-.text-editor textarea { resize: vertical; min-height: 130px; max-height: 45vh; font-size: 14px; line-height: 1.6; }
+.text-editor label, .text-property { display: flex; flex-direction: column; gap: 7px; color: #9da6b5; font-size: 12px; }
+.text-editor input, .text-editor select { width: 100%; min-width: 0; border: 1px solid #3a3d46; border-radius: 4px; background: #101216; color: #e1e6ee; padding: 7px 9px; font: inherit; outline: none; }
+.text-editor input:focus, .text-editor select:focus { border-color: #87b7f2; }
 .text-editor input[type=color] { height: 34px; padding: 4px 5px; }
 .text-properties { display: grid; grid-template-columns: 1fr 1fr; gap: 13px 12px; }
-.text-font-family { grid-column: 1 / -1; }
-.text-editor-help { color: #7f8999; font-size: 11px; line-height: 1.8; margin: 0; }
-.text-editor-actions { margin-top: auto; display: flex; justify-content: flex-end; gap: 8px; }
+.text-font-name { display: flex; align-items: center; min-height: 34px; padding: 7px 9px; border: 1px solid #30333b; border-radius: 4px; background: #15171b; color: #b7bdc7; }
+.text-editor input[type=number] { height: 34px; }
+.text-format-row { grid-column: 1 / -1; display: grid; grid-template-columns: 34px 1fr; gap: 12px; }
+.text-align-buttons { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+.text-toggle { display: grid; place-items: center; height: 34px; padding: 6px; color: #97a9c1; background: #101216; border-color: #3a3d46; }
+.text-toggle[aria-pressed=true], .text-toggle[aria-pressed=true]:hover { color: #c3defe; background: #30455f; border-color: #82afea; }
+.text-bold-icon { mask-image: url('../../../Resource/Icons/TextBold.png'); }
+.text-alignment-icon { display: block; width: 22px; height: 22px; pointer-events: none; }
+.text-editor-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 2px; }
 .text-editor-actions button { border-color: #3b3e46; }
 .text-editor-actions .primary { background: #344b69; border-color: #6586af; color: #f1f5fb; }

@@ -7,7 +7,7 @@ async function Main(): Promise<void> {
   const Root = Resolve(__dirname, '../../..')
   const Path = Resolve(Root, 'Project/Demo/Demo.hbr')
   if (ExistsSync(Path)) throw new Error('Demo.hbr already exists; user projects are never overwritten by this generator.')
-  const Showcase: { boards: { items: { id: string; src?: string }[] }[] } = JSON.parse(ReadFileSync(Resolve(Root, 'Code/Resource/examples/showcase.citadel'), 'utf8'))
+  const Showcase: { boards: { items: { id: string; src?: string }[] }[] } = JSON.parse(ReadFileSync(Resolve(Root, 'Code/Resource/Demo/Showcase.citadel'), 'utf8'))
   const Items = Showcase.boards.flatMap(Board => Board.items)
   const Sources = ['media-image', 'res-tinted'].map(Id => {
     const Source = Items.find(Item => Item.id === Id)?.src
@@ -15,7 +15,7 @@ async function Main(): Promise<void> {
     if (!Match) throw new Error(`The bundled showcase image ${Id} is unavailable.`)
     return { name: `${Id}.png`, bytes: Buffer.from(Match[1], 'base64') }
   })
-  Sources.push({ name: 'Icon.png', bytes: ReadFileSync(Resolve(Root, 'Code/Resource/icon.png')) })
+  Sources.push({ name: 'Icon.png', bytes: ReadFileSync(Resolve(Root, 'Code/Resource/Demo/Icon.png')) })
   const Store = new ImageStore()
   const Imported = await Store.ImportBuffers(Sources)
   if (Imported.errors.length) throw new Error(Imported.errors.join('\n'))

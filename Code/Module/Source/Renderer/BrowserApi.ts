@@ -1,4 +1,4 @@
-import { EmptyDocument, type BrowseResult, type HybridRefApi, type ImportResult, type LoadedBoard, type ProjectEntry, type SaveResult } from '../Shared/Types'
+import { EmptyDocument, type BrowseResult, type CleanupResult, type HybridRefApi, type ImportResult, type LoadedBoard, type ProjectEntry, type SaveResult } from '../Shared/Types'
 import { RequestFilePath } from './FileDialog'
 
 const LastPath = 'hybridref.lastPath'
@@ -68,6 +68,11 @@ export function CreateBrowserApi(): HybridRefApi {
         if (!window.confirm(`文件已存在，是否覆盖？\n${Path}`)) return null
         Result = await Post<SaveResult>('save', { path: Path, document: Document, overwrite: true })
       }
+      Remember(Result.path)
+      return Result
+    },
+    async Cleanup(Document, Path) {
+      const Result = await Post<CleanupResult>('cleanup', { path: Path, document: Document })
       Remember(Result.path)
       return Result
     },

@@ -3,6 +3,7 @@ const Path = require('node:path')
 const Ts = require('typescript')
 
 const ModuleRoot = Path.resolve(__dirname, '..')
+const ResourceRoot = Path.resolve(ModuleRoot, '../Resource')
 const SourceRoots = ['Source', 'Scripts', 'E2E']
 const ConfigurationFiles = ['vite.config.ts', 'vitest.config.ts', 'playwright.config.ts']
 const CodeExtensions = new Set(['.ts', '.tsx', '.js', '.cjs', '.mjs'])
@@ -25,6 +26,19 @@ function CheckFilename(Filename) {
   if (!SourceExtensions.has(Extension)) return
   const Stem = Path.basename(Filename).replace(/(?:\.d)?\.(?:ts|tsx|js|cjs|mjs|css|html)$/, '')
   if (!IsPascalCase(Stem)) Problems.push(`${Path.relative(ModuleRoot, Filename)}: filename must use PascalCase`)
+}
+
+function CheckResourceNames(Directory) {
+  for (const Entry of Fs.readdirSync(Directory, { withFileTypes: true })) {
+    const Filename = Path.join(Directory, Entry.name)
+    if (Entry.isDirectory()) {
+      if (!IsPascalCase(Entry.name)) Problems.push(`${Path.relative(ModuleRoot, Filename)}: directory name must use PascalCase`)
+      CheckResourceNames(Filename)
+    } else if (Entry.isFile()) {
+      const Stem = Path.basename(Entry.name, Path.extname(Entry.name))
+      if (!IsPascalCase(Stem)) Problems.push(`${Path.relative(ModuleRoot, Filename)}: filename must use PascalCase`)
+    }
+  }
 }
 
 function CheckCode(Filename) {
@@ -70,6 +84,12 @@ for (const SourceRoot of SourceRoots) {
 
 // These names are required by the tools' standard configuration discovery.
 for (const Filename of ConfigurationFiles) CheckCode(Path.join(ModuleRoot, Filename))
+
+if (Fs.existsSync(ResourceRoot)) {
+  CheckResourceNames(ResourceRoot)
+} else {
+  Problems.push('../Resource: resource directory is missing')
+}
 
 if (Problems.length) {
   console.error(`PascalCase naming check failed:\n${Problems.join('\n')}`)

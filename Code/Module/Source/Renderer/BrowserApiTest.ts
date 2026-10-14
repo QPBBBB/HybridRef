@@ -205,6 +205,25 @@ Describe('browser API', () => {
     Expect(Request().body).toEqual({ files: [{ name: '参考.png', data: 'AID/' }] })
   })
 
+  It('cleans the saved project using the current edited document without a file dialog', async () => {
+    const Document = EmptyDocument()
+    Document.images.push({ id: 'Image', asset: 'Asset', x: 15, y: 30, width: 320, height: 200 })
+    const Result = { path: 'D:/参考/Test.hbr', document: EmptyDocument(), assets: [], removedFiles: 2 }
+    Response(Result)
+    Expect(await CreateBrowserApi().Cleanup(Document, Result.path)).toEqual(Result)
+    Expect(Request().endpoint).toBe('/api/cleanup')
+    Expect(Request().body).toEqual({ path: Result.path, document: Document })
+    Expect(PathDialog).not.toHaveBeenCalled()
+    Expect(Stored.get('hybridref.lastPath')).toBe(Result.path)
+  })
+
+  It('keeps the current path when cleanup fails', async () => {
+    Stored.set('hybridref.lastPath', 'D:/Old.hbr')
+    Response({ error: '无法清理资源' }, 400)
+    await Expect(CreateBrowserApi().Cleanup(EmptyDocument(), 'D:/Broken.hbr')).rejects.toThrow('无法清理资源')
+    Expect(Stored.get('hybridref.lastPath')).toBe('D:/Old.hbr')
+  })
+
   It('only requests the browser close warning while there are unsaved edits', () => {
     const Api = CreateBrowserApi(), InputEvent = { preventDefault: Vi.fn(), returnValue: undefined as string | undefined }
     Unload(InputEvent)

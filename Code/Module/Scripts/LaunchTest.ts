@@ -22,9 +22,9 @@ function Fixture() {
     UtimesSync(Target, Timestamp, Timestamp)
     return Target
   }
-  for (const FileValue of ['Source/Server/Index.ts', '../Resource/icon.png', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'vite.config.ts', 'Scripts/Build.cjs']) Write(FileValue)
+  for (const FileValue of ['Source/Server/Index.ts', '../Resource/Demo/Icon.png', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'vite.config.ts', 'Scripts/Build.cjs']) Write(FileValue)
   for (const FileValue of Outputs) Write(FileValue, '', 20)
-  for (const Directory of ['Source/Server', 'Source', '../Resource']) UtimesSync(Path.join(ModuleRoot, Directory), 10, 10)
+  for (const Directory of ['Source/Server', 'Source', '../Resource/Demo', '../Resource']) UtimesSync(Path.join(ModuleRoot, Directory), 10, 10)
   const RuntimeFile = Path.join(ModuleRoot, 'Runtime/Server.json')
   const WriteRuntime = (Runtime: unknown) => { MkdirSync(Path.dirname(RuntimeFile), { recursive: true }); WriteFileSync(RuntimeFile, JSON.stringify(Runtime)) }
   return { root: Root, moduleRoot: ModuleRoot, write: Write, runtimeFile: RuntimeFile, writeRuntime: WriteRuntime, buildId: '20000-20000' }

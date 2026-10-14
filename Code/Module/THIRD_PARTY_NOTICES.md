@@ -1,5 +1,12 @@
 # Third-Party Notices
 
+HybridRef resource update (2026-10-14): the active browser application uses the
+icons in `../Resource/Icons/`. The demo generator retains the upstream generated
+media in `../Resource/Demo/Showcase.citadel` and `../Resource/Demo/Icon.png`.
+Unused desktop icon files, font files, HyperType sounds, and the Whisper engine
+have been removed from `Code/Resource`. The upstream notices below are preserved
+for the archived Citadel code and describe its historical distribution paths.
+
 Citadel bundles the works listed below. Each entry names the source, the licence,
 and the attribution the licence requires. Distributed builds of Citadel must ship
 this file.
