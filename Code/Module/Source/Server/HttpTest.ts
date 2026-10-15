@@ -73,6 +73,22 @@ function ImageBoard(Id: string): BoardDocument {
 }
 
 Describe('local browser HTTP server', () => {
+  It('resolves Markdown images only inside the active project and normalizes embedded images', async () => {
+    const { call: Call, projectDirectory: ProjectDirectory } = await App()
+    const Created = await Call('/api/new', { name: 'Markdown' })
+    const Path = Created.body.path
+    WriteFileSync(Join(ProjectDirectory, 'Markdown/Local.jpg'), Buffer.from(await Jpeg(), 'base64'))
+    const Loaded = await Call('/api/markdown-image', { source: 'Local.jpg', projectPath: Path })
+    Expect(Loaded.status).toBe(200)
+    Expect(Loaded.body.dataUrl).toMatch(/^data:image\/png;base64,/)
+    Expect([Loaded.body.width, Loaded.body.height]).toEqual([12, 8])
+    Expect((await Call('/api/markdown-image', { source: 'Local.jpg', projectPath: Path }, { session: RandomUUID() })).status).toBe(409)
+    Expect((await Call('/api/markdown-image', { source: '../Local.jpg', projectPath: Path })).status).not.toBe(200)
+    const Embedded = await Call('/api/markdown-image', { source: `data:image/jpeg;base64,${await Jpeg()}`, projectPath: Path })
+    Expect(Embedded.status).toBe(200)
+    Expect(Embedded.body.dataUrl).toBe(Loaded.body.dataUrl)
+  })
+
   It('creates, saves and opens text through the existing document APIs using separate resource files', async () => {
     const { call: Call, projectDirectory: ProjectDirectory } = await App()
     const Document: BoardDocument = { ...EmptyDocument(), texts: [{ id: 'note-1', x: 20, y: 30, width: 320, height: 180, text: EmptyTextResource('中文\nHTTP 文本') }] }

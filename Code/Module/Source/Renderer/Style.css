@@ -34,9 +34,9 @@ button:disabled { color: #595d64; cursor: default; }
 .text-inline-input { display: block; width: 100%; height: 100%; min-width: 0; min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 0; outline: none; resize: none; background: transparent; color: inherit; caret-color: #bed9fa; font: inherit; line-height: inherit; text-align: inherit; letter-spacing: inherit; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; cursor: text; scrollbar-width: none; }
 .text-inline-input::selection { background: #79a8df55; }
 .canvas-tools { position: absolute; top: 12px; left: 10px; z-index: 4; }
-.canvas-tool, .text-settings-button { color: rgb(124 180 246 / 45%); }
+.canvas-tool, .text-settings-button { color: #fff; }
 .canvas-tool { display: grid; place-items: center; width: 40px; height: 40px; padding: 7px; border-radius: 5px; background: #17223333; }
-.canvas-tool:hover:not(:disabled), .text-settings-button:hover:not(:disabled), .text-settings-button[aria-expanded=true] { color: rgb(155 202 255 / 85%); background: #22375266; }
+.canvas-tool:hover:not(:disabled), .text-settings-button:hover:not(:disabled), .text-settings-button[aria-expanded=true] { color: #fff; background: #ffffff26; }
 .canvas-tool:disabled { opacity: .35; }
 .tool-icon { display: block; width: 100%; height: 100%; pointer-events: none; background-color: currentColor; mask-repeat: no-repeat; mask-position: center; mask-size: contain; }
 .text-create-icon { mask-image: url('../../../Resource/Icons/TextCreate.svg'); }

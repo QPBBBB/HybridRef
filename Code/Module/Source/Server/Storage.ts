@@ -6,6 +6,8 @@ import { decode as DecodeBmp } from 'bmp-js'
 import Sharp from 'sharp'
 import { parseDocument as ParseDocument, stringify as Stringify } from 'yaml'
 import type { BoardDocument, BoardImage, BoardText, CleanupResult, ImageAsset, ImportResult, LoadedBoard, TextResource } from '../Shared/Types'
+import { MarkdownImageSources, MarkdownLocalImagePath } from '../Shared/Markdown'
+import { DownloadMarkdownImage, MarkdownImageByteLimit } from './MarkdownImages'
 
 type DecodedImage = { bytes: Buffer; asset: ImageAsset }
 type CachedImage = DecodedImage & { Filename: string; Reference?: string; Source?: string }
@@ -218,6 +220,13 @@ async function NormalizeImage(Input: Uint8Array): Promise<DecodedImage> {
 
 function PathKey(Path: string): string { return process.platform === 'win32' ? Resolve(Path).toLowerCase() : Resolve(Path) }
 
+function ProtectMarkdownImages(References: Set<string>, Content: string, ProjectDir: string): void {
+  for (const Source of MarkdownImageSources(Content)) {
+    const Path = MarkdownLocalImagePath(Source)
+    if (Path) References.add(PathKey(Resolve(ProjectDir, Path)))
+  }
+}
+
 /** Only sibling or ancestor projects can legally reference this resource folder:
  * descendants and unrelated project directories would need a forbidden '..'. */
 async function SharedReferences(Target: string, ResourceDir: string): Promise<Set<string>> {
@@ -237,6 +246,12 @@ async function SharedReferences(Target: string, ResourceDir: string): Promise<Se
           if (!IsRecord(Item) || typeof Item.asset !== 'string') continue
           const Path = Resolve(Directory, Item.asset.replace(/\\/g, '/'))
           if (Inside(ResourceDir, Path)) References.add(PathKey(Path))
+          if (Items === Value.texts) {
+            try {
+              const Text = ParseYaml(await ReadFile(await GuardedResource(Directory, Path, '文本'), 'utf8'), '文本资源')
+              if (IsRecord(Text) && typeof Text.content === 'string') ProtectMarkdownImages(References, Text.content, Directory)
+            } catch (CaughtError) { if (!Missing(CaughtError)) throw CaughtError }
+          }
         }
       }
     }
@@ -318,6 +333,37 @@ export class ImageStore {
       } catch (CaughtError) { Result.errors.push(`${FileValue.name}：${ReadableError(CaughtError)}`) }
     }
     return Result
+  }
+
+  async MarkdownImage(Source: string): Promise<ImageAsset> {
+    let Bytes: Buffer
+    if (/^https?:\/\//i.test(Source)) Bytes = await DownloadMarkdownImage(Source)
+    else if (/^data:image\/(?:png|jpeg|webp|gif|avif|bmp);base64,/i.test(Source)) {
+      const Base64 = Source.slice(Source.indexOf(',') + 1)
+      if (!/^[a-z0-9+/]*={0,2}$/i.test(Base64) || Base64.length > MarkdownImageByteLimit * 4 / 3 + 4) throw new Error('内嵌图片数据无效或超过 20 MB。')
+      Bytes = Buffer.from(Base64, 'base64')
+    } else {
+      const Path = MarkdownLocalImagePath(Source)
+      if (!Path || !this.SourcePath) throw new Error('请先保存项目，并使用项目文件夹内的相对图片路径。')
+      const ProjectDir = Dirname(this.SourcePath)
+      const File = await Open(await GuardedResource(ProjectDir, Resolve(ProjectDir, Path)), 'r')
+      try {
+        if ((await File.stat()).size > MarkdownImageByteLimit) throw new Error('Markdown 图片不能超过 20 MB。')
+        Bytes = await File.readFile()
+      } finally { await File.close() }
+    }
+    if (Bytes.length > MarkdownImageByteLimit) throw new Error('Markdown 图片不能超过 20 MB。')
+    if (Bytes.toString('ascii', 0, 2) === 'BM') {
+      if (Bytes.length < 26) throw new Error('BMP 图片数据不完整。')
+      const Header = Bytes.readUInt32LE(14)
+      const Width = Header === 12 ? Bytes.readUInt16LE(18) : Math.abs(Bytes.readInt32LE(18))
+      const Height = Header === 12 ? Bytes.readUInt16LE(20) : Math.abs(Bytes.readInt32LE(22))
+      if (!Width || !Height || Width * Height > 64_000_000) throw new Error('Markdown 图片总面积不能超过 6400 万像素。')
+    } else {
+      const Metadata = await Sharp(Bytes, { limitInputPixels: 64_000_000 }).metadata()
+      if (!['png', 'jpeg', 'webp', 'gif', 'avif', 'heif'].includes(Metadata.format ?? '')) throw new Error('Markdown 图片支持 PNG、JPEG、WebP、GIF、AVIF 和 BMP。')
+    }
+    return (await NormalizeImage(Bytes)).asset
   }
 
   async LoadProject(Path: string): Promise<LoadedBoard> {
@@ -447,6 +493,7 @@ export class ImageStore {
       await Mkdir(ResourceDir, { recursive: true })
       await GuardedResource(ProjectDir, ResourceDir)
       const Protected = await SharedReferences(Target, ResourceDir)
+      for (const Item of Document.texts) ProtectMarkdownImages(Protected, Item.text.content, ProjectDir)
       // Validate all existing targets before writing any resource or the YAML.
       const Resources: ImmutableResource[] = []
       for (const [Id, ImageValue] of Assets) {

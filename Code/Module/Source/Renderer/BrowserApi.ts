@@ -1,4 +1,4 @@
-import { EmptyDocument, type BrowseResult, type CleanupResult, type HybridRefApi, type ImportResult, type LoadedBoard, type ProjectEntry, type SaveResult } from '../Shared/Types'
+import { EmptyDocument, type BrowseResult, type CleanupResult, type HybridRefApi, type ImageAsset, type ImportResult, type LoadedBoard, type ProjectEntry, type SaveResult } from '../Shared/Types'
 import { RequestFilePath } from './FileDialog'
 
 const LastPath = 'hybridref.lastPath'
@@ -46,6 +46,7 @@ export function CreateBrowserApi(): HybridRefApi {
       return { path: Result.path, document: EmptyDocument(), assets: [] }
     },
     ListProjects() { return Post<ProjectEntry[]>('projects') },
+    MarkdownImage(Source, ProjectPath) { return Post<ImageAsset>('markdown-image', { source: Source, projectPath: ProjectPath }) },
     async Open(Path) {
       const Loaded = await Post<LoadedBoard>('open', { path: Path })
       Remember(Loaded.path)

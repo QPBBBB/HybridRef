@@ -31,6 +31,8 @@ Dependencies/
 
 Node.js 与 pnpm 只保留运行所需文件和许可证；依赖安装按当前锁文件执行，不包含归档 Electron、Whisper 或额外浏览器。精简重复的编译工具与未使用的测试依赖后，仍保留完整的图像服务、开发构建工具及使用系统 Edge 的测试工具，均集中于 `Packages/`；Windows x64 的原生依赖不能直接用于其他平台。
 
+Markdown 解析与 HTML 清理使用本地 Marked 18.1.1 和 DOMPurify 3.4.17，连同类型文件约 2 MB；不增加 Node.js 之外的运行环境。文本排版和本地图片可离线使用，正文中的网络图片仍需要网络。
+
 本目录下的 `Packages/` 与 `Cache/` 是 Git 忽略的生成目录。交付现成的离线文件夹时须包含 `Dependencies/Packages/node_modules`；仅获取受版本管理的文件后，需要运行 Setup 安装依赖。
 
 Node 官方二进制来源和 SHA256 见 [Environment.json](Environment.json)，许可证位于 [Node/LICENSE](Node/LICENSE)。pnpm 许可证位于 [Pnpm/LICENSE](Pnpm/LICENSE)，其内含第三方许可证随包保留。

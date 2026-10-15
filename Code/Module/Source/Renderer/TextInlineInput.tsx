@@ -23,7 +23,7 @@ export function TextInlineInput({ Content, OnChange, OnApply, OnCancel, OnSave, 
     if (Modifier && InputEvent.key === 'Enter') { InputEvent.preventDefault(); OnApply(); return }
     if (InputEvent.key === 'Escape') { InputEvent.preventDefault(); OnCancel() }
   }
-  return <textarea ref={Input} data-testid="text-content" className="text-inline-input" aria-label="文本内容" defaultValue={InitialContent.current} spellCheck={false}
+  return <textarea ref={Input} data-testid="text-content" className="text-inline-input" aria-label="Markdown 文本源码" defaultValue={InitialContent.current} spellCheck={false}
     onChange={(InputEvent) => OnChange(InputEvent.target.value)} onKeyDown={KeyDown}
     onPointerDown={(InputEvent) => InputEvent.stopPropagation()} onDoubleClick={(InputEvent) => InputEvent.stopPropagation()} onContextMenu={(InputEvent) => InputEvent.stopPropagation()}
     onCompositionStart={() => { Composing.current = true; OnComposition(true) }}

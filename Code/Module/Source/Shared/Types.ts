@@ -27,6 +27,7 @@ export interface HybridRefApi {
   Save(Document: BoardDocument, Path: string | null): Promise<SaveResult | null>
   Cleanup(Document: BoardDocument, Path: string): Promise<CleanupResult>
   ImportBytes(Files: { name: string; bytes: Uint8Array }[]): Promise<ImportResult>
+  MarkdownImage(Source: string, ProjectPath: string | null): Promise<ImageAsset>
   SetDirty(Dirty: boolean): void
 }
 export const TextFontFamily = 'SimHei'

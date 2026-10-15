@@ -9,7 +9,7 @@ type Session = { store: ImageStore; currentPath: string | null; queue: Promise<v
 type Body = Record<string, unknown>
 const BodyLimit = 256 * 1024 * 1024
 const SessionId = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i
-const ApiPaths = new Set(['/api/startup', '/api/open', '/api/save', '/api/import', '/api/browse', '/api/ping', '/api/new', '/api/projects', '/api/cleanup'])
+const ApiPaths = new Set(['/api/startup', '/api/open', '/api/save', '/api/import', '/api/browse', '/api/ping', '/api/new', '/api/projects', '/api/cleanup', '/api/markdown-image'])
 const Mime: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml',
@@ -213,6 +213,11 @@ export function CreateAppServer(Options: Options): Server {
   async function Api(Path: string, Body: Body, Session: Session): Promise<unknown> {
     if (Path === '/api/ping') return {}
     if (Path === '/api/projects') return Projects(ProjectDirectory)
+    if (Path === '/api/markdown-image') {
+      if (typeof Body.source !== 'string' || !Body.source || Body.source.length > 28_000_000) throw new HttpError(400, 'Markdown 图片地址无效。')
+      if (Body.projectPath !== Session.currentPath) throw new HttpError(409, '画板已切换，请重新加载图片。')
+      return Session.store.MarkdownImage(Body.source)
+    }
     if (Path === '/api/browse') {
       if (Body.path === undefined) await Mkdir(ProjectDirectory, { recursive: true })
       return Browse(Body.path === undefined ? ProjectDirectory : PathFrom(Body.path), ProjectDirectory)
@@ -294,7 +299,9 @@ export function CreateAppServer(Options: Options): Server {
         const Body = await ReadBody(Request)
         const Session = SessionFor(Request)
         const Result = Session.queue.then(() => Api(Pathname, Body, Session))
-        Session.queue = Result.then(() => {}, () => {})
+        // Image reads capture their project directory before awaiting I/O and
+        // never mutate the store. Slow web images must not block saves or edits.
+        if (Pathname !== '/api/markdown-image') Session.queue = Result.then(() => {}, () => {})
         Json(Response, 200, await Result)
         return
       }

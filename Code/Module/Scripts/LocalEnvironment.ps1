@@ -137,7 +137,7 @@ function TestHybridRefDependencies {
         if ($Saved.$Key -ne $Expected[$Key]) { throw 'The dependency definitions have changed. Run Dependencies\Setup.cmd to refresh the local dependencies.' }
     }
     ConnectHybridRefDependencies -Environment $Environment
-    $DependencyCode = "const Require = require('node:module').createRequire(require('node:path').join(process.argv[1], 'package.json')); for (const Name of ['react', 'react-dom', 'bmp-js', 'yaml', 'vite', 'typescript', 'vitest', '@playwright/test', 'esbuild']) Require.resolve(Name); Require('sharp'); Require('esbuild')"
+    $DependencyCode = "const Require = require('node:module').createRequire(require('node:path').join(process.argv[1], 'package.json')); for (const Name of ['react', 'react-dom', 'bmp-js', 'yaml', 'marked', 'dompurify', 'vite', 'typescript', 'vitest', '@playwright/test', 'esbuild']) Require.resolve(Name); Require('sharp'); Require('esbuild')"
     $CheckLogPath = Join-Path $Environment.LogRoot "Environment-$PID.log"
     $ExitCode = InvokeHybridRefNative -Executable $Environment.NodePath -Arguments @('-e', $DependencyCode, $Environment.ModuleRoot) -LogPath $CheckLogPath
     if ($ExitCode -ne 0) { throw "Local dependencies could not load. Run Dependencies\Setup.cmd; see $CheckLogPath" }

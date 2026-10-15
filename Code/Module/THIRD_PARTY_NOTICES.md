@@ -1,5 +1,13 @@
 # Third-Party Notices
 
+## Active HybridRef Markdown libraries (2026-10-15)
+
+- **Marked 18.1.1** — https://github.com/markedjs/marked — MIT. Copyright (c) 2018+, MarkedJS; Copyright (c) 2011-2018, Christopher Jeffrey. Full upstream notice: [MarkedLicense.txt](licenses/MarkedLicense.txt).
+- **DOMPurify 3.4.17** — https://github.com/cure53/DOMPurify — Copyright (c) Cure53 and other contributors. Dual licensed MPL-2.0 OR Apache-2.0; HybridRef uses Apache-2.0. Full license: [DomPurifyLicense.txt](licenses/DomPurifyLicense.txt).
+- **@types/trusted-types 2.0.7** — https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/trusted-types — MIT, Copyright (c) Microsoft Corporation. Bundled development types used by DOMPurify; [TrustedTypesLicense.txt](licenses/TrustedTypesLicense.txt).
+
+These packages are unmodified local dependencies. The archived Citadel notices below remain intact and do not describe the active application's dependency list.
+
 HybridRef resource update (2026-10-14): the active browser application uses the
 icons in `../Resource/Icons/`. The demo generator retains the upstream generated
 media in `../Resource/Demo/Showcase.citadel` and `../Resource/Demo/Icon.png`.

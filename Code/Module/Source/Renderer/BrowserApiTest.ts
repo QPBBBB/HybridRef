@@ -40,6 +40,14 @@ AfterEach(() => {
 })
 
 Describe('browser API', () => {
+  It('scopes Markdown image requests to the currently displayed project', async () => {
+    const Asset = { id: 'image', dataUrl: 'data:image/png;base64,AAAA', width: 10, height: 20 }
+    Response(Asset)
+    Expect(await CreateBrowserApi().MarkdownImage('Images/参考.png', 'D:/Test/Board.hbr')).toEqual(Asset)
+    Expect(Request().endpoint).toBe('/api/markdown-image')
+    Expect(Request().body).toEqual({ source: 'Images/参考.png', projectPath: 'D:/Test/Board.hbr' })
+  })
+
   It('isolates duplicated tabs while restoring the last saved path', async () => {
     Stored.set('hybridref.lastPath', 'D:/参考/Test.hbr')
     Response(null); Response(null)

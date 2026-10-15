@@ -9,6 +9,8 @@ import { ClearImageCache, DecodeAssets } from './ImageCache'
 import { IsFileDialogOpen } from './FileDialog'
 import { TextEditor } from './TextEditor'
 import { TextAppearance } from './TextAppearance'
+import { MarkdownPreview } from './MarkdownPreview'
+import { ClearMarkdownImages } from './MarkdownContent'
 import { CreateSelectionSnapshot } from './SelectionSnapshot'
 import { TextInlineInput } from './TextInlineInput'
 import { TextCreateIcon, TextSettingsIcon } from './TextCreateIcon'
@@ -156,6 +158,7 @@ export default function App(): React.ReactElement {
     TextComposing.current = false; AfterComposition.current = []
     Session.current += 1
     ClearImageCache()
+    ClearMarkdownImages()
     AssetMap.current = Object.fromEntries(NextAssets.map((Asset) => [Asset.id, Asset]))
     SetAssets(AssetMap.current)
     void DecodeAssets(NextAssets).catch(ShowError)
@@ -427,7 +430,7 @@ export default function App(): React.ReactElement {
     SetMessage('正在生成 PNG 快照…')
     try {
       if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') throw new Error('当前浏览器不支持图片剪贴板，请使用 Edge 打开本地应用')
-      const Png = CreateSelectionSnapshot(SelectedItems, AssetMap.current, getComputedStyle(Canvas.current!).backgroundColor)
+      const Png = CreateSelectionSnapshot(SelectedItems, AssetMap.current, getComputedStyle(Canvas.current!).backgroundColor, CurrentPath.current)
       // Consume rejection even if ClipboardItem construction/write fails before reading the promise.
       void Png.catch(() => {})
       // Start the clipboard write within the copy gesture; supply asynchronous pixels as a promise.
@@ -700,11 +703,11 @@ export default function App(): React.ReactElement {
           const Active = TextEdit?.id === Item.id ? TextEdit : null
           const Text = Active?.draft ?? Item.text
           return <div key={Item.id} data-testid="text-item" data-text-id={Item.id} data-x={Item.x} data-y={Item.y} data-width={Item.width} data-height={Item.height}
-            className={`board-text${Selected.includes(Item.id) ? ' selected' : ''}${Active?.inline ? ' editing' : ''}`} title={Active?.inline ? undefined : '双击直接编辑文字；拖动角点调整文本框'}
+            className={`board-text${Selected.includes(Item.id) ? ' selected' : ''}${Active?.inline ? ' editing' : ''}`} title={Active?.inline ? undefined : '双击编辑 Markdown 源码；拖动角点调整文本框'}
             style={{ left: Item.x, top: Item.y, width: Item.width, height: Item.height, outlineWidth: 1 / View.zoom,
               ...TextAppearance(Text) }} onPointerDown={(InputEvent) => Begin(InputEvent, Item.id)}>
             {Active?.inline ? <TextInlineInput Content={Text.content} OnChange={UpdateTextContent} OnApply={() => CommitText(true)} OnCancel={CancelText}
-              OnSave={(SaveAs) => { void SaveBoard(SaveAs) }} OnComposition={TextComposition} /> : Text.content}
+              OnSave={(SaveAs) => { void SaveBoard(SaveAs) }} OnComposition={TextComposition} /> : <MarkdownPreview Content={Text.content} ProjectPath={Path} />}
           </div>
         })}
       </div>

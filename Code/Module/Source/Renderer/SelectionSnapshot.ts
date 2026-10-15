@@ -1,9 +1,11 @@
 import type { BoardImage, BoardText, ImageAsset } from '../Shared/Types'
 import { BoundingBox } from './Geometry'
 import { TextAppearance } from './TextAppearance'
+import { RenderMarkdownHtml, ResolveMarkdownImages } from './MarkdownContent'
+import MarkdownCss from './Markdown.css?inline'
 
 /** Render at 100% board scale, independent of viewport zoom and screen DPI. */
-export async function CreateSelectionSnapshot(Items: readonly (BoardImage | BoardText)[], Assets: Readonly<Record<string, ImageAsset>>, Background: string): Promise<Blob> {
+export async function CreateSelectionSnapshot(Items: readonly (BoardImage | BoardText)[], Assets: Readonly<Record<string, ImageAsset>>, Background: string, ProjectPath: string | null): Promise<Blob> {
   const Bounds = BoundingBox(Items)
   if (!Bounds) throw new Error('请先选择图片或文本')
   const Width = Math.ceil(Bounds.width), Height = Math.ceil(Bounds.height)
@@ -15,6 +17,9 @@ export async function CreateSelectionSnapshot(Items: readonly (BoardImage | Boar
   const Namespace = 'http://www.w3.org/2000/svg'
   const Svg = document.createElementNS(Namespace, 'svg')
   Svg.setAttribute('width', String(Width)); Svg.setAttribute('height', String(Height))
+  const Style = document.createElementNS(Namespace, 'style')
+  Style.textContent = MarkdownCss
+  Svg.append(Style)
   const Foreign = document.createElementNS(Namespace, 'foreignObject')
   Foreign.setAttribute('width', '100%'); Foreign.setAttribute('height', '100%')
   const Root = document.createElement('div')
@@ -27,7 +32,10 @@ export async function CreateSelectionSnapshot(Items: readonly (BoardImage | Boar
     })
     if ('text' in Item) {
       Object.assign(Element.style, TextAppearance(Item.text))
-      Element.textContent = Item.text.content
+      const Markdown = document.createElement('div')
+      Markdown.className = 'markdown-content'
+      Markdown.innerHTML = RenderMarkdownHtml(Item.text.content)
+      Element.append(Markdown)
     } else {
       const Asset = Assets[Item.asset]
       if (!Asset) throw new Error('图片尚未加载完成，请稍后重试')
@@ -38,6 +46,7 @@ export async function CreateSelectionSnapshot(Items: readonly (BoardImage | Boar
     Root.append(Element)
   }
   Foreign.append(Root); Svg.append(Foreign)
+  await ResolveMarkdownImages(Root, ProjectPath)
   await document.fonts.ready
   const Raster = new Image()
   // A self-contained data URL keeps foreignObject rendering origin-clean in Edge.

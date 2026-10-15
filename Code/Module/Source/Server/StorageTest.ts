@@ -47,6 +47,41 @@ const CollisionPngs = [
 ].map((Text) => Buffer.from(Text, 'base64'))
 
 Describe('HybridRef image and text storage', () => {
+  It('loads Markdown images from project-relative paths and embedded data while preserving source', async () => {
+    const Root = Temp(), Store = new ImageStore(), Project = Join(Root, 'Markdown.hbr')
+    MkdirSync(Join(Root, 'Images'))
+    const Png = await Sharp(await Jpeg()).png().toBuffer()
+    WriteFileSync(Join(Root, 'Images/图 #1.png'), Png)
+    const Document = TextBoard('# 标题\n\n![图片](Images/图%20%231.png)')
+    await Store.SaveProject(Project, Document)
+    const Image = await Store.MarkdownImage('Images/图%20%231.png')
+    Expect([Image.width, Image.height]).toEqual([13, 9])
+    Expect((await Sharp(Bytes(Image.dataUrl)).metadata()).format).toBe('png')
+    Expect((await Store.MarkdownImage(`data:image/png;base64,${Png.toString('base64')}`)).dataUrl).toBe(Image.dataUrl)
+    await Expect(Store.MarkdownImage('../Secret.png')).rejects.toThrow('相对图片路径')
+    await Expect(Store.MarkdownImage('file:///Secret.png')).rejects.toThrow('相对图片路径')
+    Expect((await Store.LoadProject(Project)).document.texts[0].text.content).toBe(Document.texts[0].text.content)
+  })
+
+  It('cleanup retains textures referenced only by Markdown, including a shared text resource', async () => {
+    const Root = Temp(), Store = new ImageStore(), Project = Join(Root, 'Markdown.hbr')
+    const Png = await Sharp(await Jpeg()).png().toBuffer()
+    const Texture = TextureName(Hash(Png))
+    MkdirSync(Join(Root, 'MarkdownResource'))
+    WriteFileSync(Join(Root, 'MarkdownResource', Texture), Png)
+    WriteFileSync(Join(Root, 'MarkdownResource/Unused.png'), Png)
+    const Source = `![图片](MarkdownResource/${Texture})`
+    const Document = TextBoard(Source)
+    await Store.SaveProject(Project, Document)
+    Expect(ExistsSync(Join(Root, 'MarkdownResource', Texture))).toBe(true)
+    Expect(ExistsSync(Join(Root, 'MarkdownResource/Unused.png'))).toBe(false)
+    const Stored = Parse(ReadFileSync(Project, 'utf8'))
+    WriteFileSync(Join(Root, 'Shared.hbr'), Stringify(Stored))
+    await Store.CleanupProject(Project, Board())
+    Expect(ExistsSync(Join(Root, 'MarkdownResource', Texture))).toBe(true)
+    Expect(Parse(ReadFileSync(Join(Root, Stored.texts[0].asset), 'utf8')).content).toBe(Source)
+  })
+
   It.each(['中文标题\n第二行  空格\n\t缩进\n\n', '', '   \n\t\r\n', 'emoji 🌄 <script> & # : "quoted"'])('stores text content %j in its own deterministic resource with only a layout reference in hbr', async (Content) => {
     const Root = Temp()
     const Path = Join(Root, '文字 #%25.hbr')

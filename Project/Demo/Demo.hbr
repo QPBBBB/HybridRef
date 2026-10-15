@@ -1,9 +1,9 @@
 format: "hybridref"
 formatVersion: 3
 viewport:
-  x: 162.6486
-  y: 287.9342
-  zoom: 0.3499
+  x: 591.7376
+  y: 100.2546
+  zoom: 0.2231
 images:
   - id: "bf4658c9-bb2e-4f24-8aa9-c71f2e45a3e9"
     asset: "DemoResource/Texture_0E262CB57B217EA9_9D532DBC.png"
@@ -39,6 +39,12 @@ texts:
   - id: "794b836e-1216-416a-ba28-79aa440b53e4"
     asset: "DemoResource/Text_3ECDCA4D79B84B8A_4B2CE053.yaml"
     x: 1009.1867
-    y: 4.0213
+    y: -5.5053
     width: 360
     height: 160
+  - id: "72d2a9bf-c491-4230-9277-220e5c72da29"
+    asset: "DemoResource/Text_47CE8E69C95BA372_829B9D43.yaml"
+    x: 109.5694
+    y: 219.2726
+    width: 847.1526
+    height: 2686.6385

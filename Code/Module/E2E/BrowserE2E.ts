@@ -1056,3 +1056,135 @@ Test('dropping images commits the active text draft before image import and pres
   await Page.keyboard.press('Control+z')
   await Expect(Page.getByTestId('text-item')).toHaveCount(0)
 })
+
+Test('Markdown renders GFM, keeps source editable and saved, and exports the same typography and local image', async ({ page: Page }) => {
+  const Folder = Join(ProjectDirectory, 'Markdown')
+  const ResourceFolder = Join(Folder, 'MarkdownResource')
+  await Mkdir(ResourceFolder, { recursive: true })
+  const Picture = await Sharp({ create: { width: 280, height: 80, channels: 3, background: '#2493c1' } }).png().toBuffer()
+  const PictureHash = CreateHash('sha256').update(Picture).digest('hex').toUpperCase()
+  const PictureName = `Texture_${PictureHash.slice(8, 24)}_${PictureHash.slice(0, 8)}.png`
+  await WriteFile(Join(ResourceFolder, PictureName), Picture)
+  const Content = [
+    '# Markdown 参考笔记',
+    '', '**重点文字**、*斜体*、~~已废弃~~，还有 `InlineCode()`。',
+    '', '## 列表与引用', '', '- 参考资料', '  - 嵌套列表', '- 第二项', '', '3. 有序步骤', '4. 下一步',
+    '', '> 引用说明', '> 第二行保留换行',
+    '', '### 任务与表格', '', '- [x] 已完成', '- [ ] 待办',
+    '', '| 左对齐 | 居中 | 右对齐 |', '| :--- | :---: | ---: |', '| **标题** | 中文 | 42 |',
+    '', '#### 代码块', '', '```typescript', 'const Value = "<tag>"', '  console.log(Value)', '```',
+    '', '##### 链接和图片', '', '[参考链接][reference] · https://example.com',
+    '', `![本地示意图](MarkdownResource/${PictureName})`,
+    '', '###### 六级标题', '', '---', '', '转义：\\*保留星号\\*。',
+    '', '[reference]: https://example.com "示例"',
+  ].join('\n')
+  const Text = EmptyTextResource(Content)
+  Text.font.size = 18; Text.paragraph.lineHeight = 1.4; Text.padding = 22
+  const TextBytes = Buffer.from(Stringify(Text))
+  const TextHash = CreateHash('sha256').update(TextBytes).digest('hex').toUpperCase()
+  const TextName = `Text_${TextHash.slice(8, 24)}_${TextHash.slice(0, 8)}.yaml`
+  await WriteFile(Join(ResourceFolder, TextName), TextBytes)
+  const Project = Join(Folder, 'Markdown.hbr')
+  await WriteFile(Project, Stringify({ ...EmptyDocument(), viewport: { x: 220, y: 20, zoom: 0.52 }, texts: [
+    { id: 'markdown', asset: `MarkdownResource/${TextName}`, x: 0, y: 0, width: 760, height: 1480 },
+  ] }))
+  await Page.goto(ServiceUrl)
+  await OpenProject(Page, 'Markdown')
+  const Frame = Page.getByTestId('text-item')
+  const Markdown = Frame.getByTestId('markdown-content')
+  for (const Tag of ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'table', 'pre', 'hr']) await Expect(Markdown.locator(Tag)).toHaveCount(1)
+  await Expect(Markdown.locator('h1')).toHaveText('Markdown 参考笔记')
+  await Expect(Markdown.locator('h1')).toHaveCSS('font-size', '36px')
+  await Expect(Markdown.locator('em')).toHaveText('斜体')
+  await Expect(Markdown.locator('del')).toHaveText('已废弃')
+  await Expect(Markdown.locator('ul ul li')).toHaveText('嵌套列表')
+  await Expect(Markdown.locator('ol')).toHaveAttribute('start', '3')
+  await Expect(Markdown.locator('.markdown-checkbox')).toHaveText(['☑', '☐'])
+  await Expect(Markdown.locator('td').last()).toHaveCSS('text-align', /right$/)
+  await Expect(Markdown.locator('pre code')).toHaveText('const Value = "<tag>"\n  console.log(Value)\n')
+  await Expect(Markdown.locator('a')).toHaveCount(2)
+  const PictureElement = Markdown.locator('img')
+  await Expect(PictureElement).toHaveAttribute('src', /^data:image\/png;base64,/)
+  await Expect.poll(() => PictureElement.evaluate(Image => (Image as HTMLImageElement).naturalWidth)).toBe(280)
+  await Frame.click({ position: { x: 20, y: 20 } })
+  await CaptureClipboard(Page)
+  const Captured = await CopySnapshot(Page)
+  const Snapshot = Buffer.from(Captured.png, 'base64')
+  const Raw = await Sharp(Snapshot).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+  Expect([Raw.info.width, Raw.info.height]).toEqual([760, 1480])
+  Expect(Raw.data.every((Channel, Index) => Index % 4 !== 3 || Channel === 255)).toBe(true)
+  const FrameBounds = (await Frame.boundingBox())!, ImageBounds = (await PictureElement.boundingBox())!
+  const Scale = FrameBounds.width / 760
+  const SampleX = Math.floor((ImageBounds.x + ImageBounds.width / 2 - FrameBounds.x) / Scale)
+  const SampleY = Math.floor((ImageBounds.y + ImageBounds.height / 2 - FrameBounds.y) / Scale)
+  const Offset = (SampleY * 760 + SampleX) * 4
+  Expect(Array.from(Raw.data.subarray(Offset, Offset + 4))).toEqual([36, 147, 193, 255])
+  await WriteFile(Join(ModuleRoot, 'Runtime/MarkdownSnapshot.png'), Snapshot)
+  await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/MarkdownCanvas.png') })
+  await Page.setViewportSize({ width: 1180, height: 1800 })
+  await Page.getByTestId('fit').click()
+  await Page.getByTestId('zoom').click()
+  const Reference = await Page.screenshot({ clip: (await Frame.boundingBox())!, path: Join(ModuleRoot, 'Runtime/MarkdownDom.png'),
+    style: '.selection-box,.text-settings-button{visibility:hidden}.board-text{outline:none}' })
+  const ReferenceRaw = await Sharp(Reference).ensureAlpha().raw().toBuffer()
+  let DifferentChannels = 0
+  for (let Index = 0; Index < Raw.data.length; Index++) if (Math.abs(Raw.data[Index] - ReferenceRaw[Index]) > 3) DifferentChannels++
+  Expect(DifferentChannels / Raw.data.length).toBeLessThan(0.015)
+  // Cached local image bytes keep export working even if the original file disappears.
+  await Rm(Join(ResourceFolder, PictureName))
+  Expect((await CopySnapshot(Page)).png).toBe(Captured.png)
+  await WriteFile(Join(ResourceFolder, PictureName), Picture)
+  await Frame.dblclick({ position: { x: 20, y: 20 } })
+  await Expect(Page.getByTestId('text-content')).toHaveValue(Content)
+  const Updated = Content.replace('Markdown 参考笔记', '修改后的 Markdown')
+  await Page.getByTestId('text-content').fill(Updated)
+  await Page.keyboard.press('Control+Enter')
+  await Expect(Markdown.locator('h1')).toHaveText('修改后的 Markdown')
+  await Page.keyboard.press('Control+z')
+  await Expect(Markdown.locator('h1')).toHaveText('Markdown 参考笔记')
+  await Page.keyboard.press('Control+Shift+z')
+  await Expect(Markdown.locator('h1')).toHaveText('修改后的 Markdown')
+  await Page.getByTestId('cleanup-resources').click()
+  await Expect(Page.locator('.message')).toContainText('清理')
+  await Expect(Page.getByTestId('open')).toBeEnabled()
+  const Saved = Parse(await ReadFile(Project, 'utf8'))
+  Expect(Parse(await ReadFile(Join(Folder, Saved.texts[0].asset), 'utf8')).content).toBe(Updated)
+  Expect(await ReadFile(Join(ResourceFolder, PictureName))).toEqual(Picture)
+  await Page.reload()
+  await Expect(Markdown.locator('h1')).toHaveText('修改后的 Markdown')
+  await Expect(PictureElement).toHaveAttribute('src', /^data:image\/png;base64,/)
+})
+
+Test('Markdown strips active HTML, opens links only with Ctrl-click, and renders remote or missing images', async ({ page: Page, context: Context }) => {
+  const Png = await Sharp({ create: { width: 80, height: 40, channels: 3, background: '#499566' } }).png().toBuffer()
+  await Page.route('**/api/markdown-image', async Route => {
+    const Body = Route.request().postDataJSON()
+    if (Body.source !== 'https://images.example.test/photo.png') { await Route.continue(); return }
+    await Route.fulfill({ json: { id: 'test-image', dataUrl: `data:image/png;base64,${Png.toString('base64')}`, width: 80, height: 40 } })
+  })
+  await Context.route('https://example.com/**', Route => Route.fulfill({ contentType: 'text/html', body: '<title>Reference</title>' }))
+  await Page.goto(ServiceUrl)
+  await Page.getByTestId('add-text').click()
+  const Source = '[安全链接](https://example.com)\n\n![网络图片](https://images.example.test/photo.png) ![缺图](Missing.png)\n\n<script>window.MarkdownExecuted=true</script>\n<img src="javascript:alert(1)" onerror="window.MarkdownExecuted=true">\n<a href="javascript:alert(1)">危险链接</a>\n<div class="toolbar" style="position:fixed;inset:0" onclick="alert(1)">普通内容</div>\n<form><input autofocus></form>\n<iframe src="https://example.com"></iframe>'
+  await Page.getByTestId('text-content').fill(Source)
+  await Page.keyboard.press('Control+Enter')
+  const Markdown = Page.getByTestId('markdown-content')
+  await Expect(Markdown.locator('img[alt="网络图片"]')).toHaveAttribute('src', /^data:image\/png;base64,/)
+  await Expect(Markdown.locator('.markdown-image-missing')).toHaveCount(2)
+  await Expect(Markdown.locator('script, iframe, form, input, [onclick], [onerror], [style], .toolbar')).toHaveCount(0)
+  Expect(await Page.evaluate(() => 'MarkdownExecuted' in window)).toBe(false)
+  await Expect(Markdown.getByText('危险链接')).not.toHaveAttribute('href')
+  const Link = Markdown.getByRole('link', { name: '安全链接' })
+  await Link.click()
+  Expect(Context.pages()).toHaveLength(1)
+  const Popup = Context.waitForEvent('page')
+  await Link.click({ modifiers: ['Control'] })
+  const Reference = await Popup
+  await Expect(Reference).toHaveTitle('Reference')
+  await Reference.close()
+  await Page.bringToFront()
+  await CaptureClipboard(Page)
+  await CopySnapshot(Page)
+  await Page.getByTestId('text-item').dblclick({ position: { x: 12, y: 80 } })
+  await Expect(Page.getByTestId('text-content')).toHaveValue(Source)
+})
