@@ -8,6 +8,7 @@ import { parse as Parse, stringify as Stringify } from 'yaml'
 import { afterEach as AfterEach, describe as Describe, expect as Expect, it as It, vi as Vi } from 'vitest'
 import { ImageStore } from './Storage'
 import { EmptyTextResource, type BoardDocument, type BoardText } from '../Shared/Types'
+import { CreateArrow } from '../Shared/Arrows'
 
 const Roots: string[] = []
 function Temp(): string {
@@ -47,6 +48,38 @@ const CollisionPngs = [
 ].map((Text) => Buffer.from(Text, 'base64'))
 
 Describe('HybridRef image and text storage', () => {
+  It('saves connector geometry, styles and bindings through reopen, Save As and orphan cleanup', async () => {
+    const Root = Temp(), Store = new ImageStore(), Project = Join(Root, 'Arrows.hbr')
+    const Document = TextBoard('箭头目标')
+    const Arrow = CreateArrow('arrow', { x: -100, y: 120 }, { x: -10.25, y: 120 })
+    Arrow.arrow.endBinding = { id: 'text-1', side: 'left', offset: 0.5 }
+    Arrow.arrow.color = '#12ABEF'; Arrow.arrow.dashed = true; Arrow.arrow.thickness = 5
+    Document.arrows = [Arrow]
+    await Store.SaveProject(Project, Document)
+    const Bytes = ReadFileSync(Project, 'utf8')
+    Expect(Parse(Bytes).formatVersion).toBe(4)
+    Expect(Parse(Bytes).arrows).toEqual([Arrow])
+    const Loaded = await Store.LoadProject(Project)
+    Expect(Loaded.document.arrows).toEqual([Arrow])
+    await Store.SaveProject(Project, Loaded.document)
+    Expect(ReadFileSync(Project, 'utf8')).toBe(Bytes)
+    const Copy = Join(Root, 'Copy.hbr')
+    await Store.SaveProject(Copy, Loaded.document)
+    Expect((await Store.CleanupProject(Copy, Loaded.document)).document.arrows).toEqual([Arrow])
+    Expect((await Store.LoadProject(Copy)).document.arrows).toEqual([Arrow])
+  })
+  It('rejects invalid connector data before overwriting a project', async () => {
+    const Store = new ImageStore(), Project = Join(Temp(), 'Invalid.hbr')
+    await Store.SaveProject(Project, Board())
+    const Before = ReadFileSync(Project, 'utf8')
+    const Arrow = CreateArrow('arrow', { x: 0, y: 0 }, { x: 200, y: 100 })
+    for (const Patch of [{ color: 'url(https://example.com)' }, { thickness: 0 }, { thickness: 100 }, { dashed: 'true' }, { bend: Infinity }, { start: { x: 2, y: 0 } }, { endBinding: { id: 'arrow', side: 'left', offset: 0 } }]) {
+      const Document = { ...Board(), arrows: [{ ...Arrow, arrow: { ...Arrow.arrow, ...Patch } }] } as BoardDocument
+      await Expect(Store.SaveProject(Project, Document)).rejects.toThrow()
+      Expect(ReadFileSync(Project, 'utf8')).toBe(Before)
+    }
+    await Expect(Store.SaveProject(Project, { ...Board(), arrows: [Arrow, Arrow] })).rejects.toThrow('重复')
+  })
   It('loads Markdown images from project-relative paths and embedded data while preserving source', async () => {
     const Root = Temp(), Store = new ImageStore(), Project = Join(Root, 'Markdown.hbr')
     MkdirSync(Join(Root, 'Images'))

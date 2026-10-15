@@ -1,5 +1,6 @@
 import React, { useEffect as UseEffect, useRef as UseRef, useState as UseState } from 'react'
-import { EmptyDocument, EmptyTextResource, TextFontFamily, type BoardDocument, type BoardImage, type BoardText, type TextResource, type ImageAsset, type ImportResult, type LoadedBoard, type ProjectEntry, type Viewport } from '../Shared/Types'
+import { EmptyDocument, EmptyTextResource, TextFontFamily, type BoardDocument, type BoardImage, type BoardText, type BoardArrow, type BoardItem, type ArrowStyle, type TextResource, type ImageAsset, type ImportResult, type LoadedBoard, type ProjectEntry, type Viewport } from '../Shared/Types'
+import { ArrowDrawing, ArrowEndpoints, CreateArrow, DetachTransformedArrows, PositionArrow, ResolveArrowBindings, SnapArrowEndpoint } from '../Shared/Arrows'
 import {
   BoundingBox, CenterImages, FitViewport, Intersects, NormalizeImages, PushImages,
   RectFromPoints, ResizeGroup, ResizeTextFrame, ScreenToWorld, SnapMove, ZoomAt,
@@ -14,9 +15,10 @@ import { ClearMarkdownImages } from './MarkdownContent'
 import { CreateSelectionSnapshot } from './SelectionSnapshot'
 import { TextInlineInput } from './TextInlineInput'
 import { TextCreateIcon, TextSettingsIcon } from './TextCreateIcon'
+import { ArrowView } from './ArrowView'
+import { ArrowEditor } from './ArrowEditor'
 
-type BoardItem = BoardImage | BoardText
-const BoardItems = (Document: BoardDocument): BoardItem[] => [...Document.images, ...Document.texts]
+const BoardItems = (Document: BoardDocument): BoardItem[] => [...Document.images, ...Document.texts, ...(Document.arrows ?? [])]
 
 type TextEditSession = {
   id: string
@@ -28,13 +30,14 @@ type TextEditSession = {
 }
 
 type Gesture = {
-  kind: 'pan' | 'marquee' | 'move' | 'resize'
+  kind: 'pan' | 'marquee' | 'move' | 'resize' | 'arrow-create' | 'arrow-start' | 'arrow-end' | 'arrow-bend'
   start: Point
   viewport: Viewport
   before: BoardItem[]
   selected: string[]
   corner?: ResizeCorner
   additive?: boolean
+  arrowId?: string
 }
 
 const Fingerprint = (Images: readonly BoardItem[]): string => JSON.stringify(Images)
@@ -66,6 +69,7 @@ export default function App(): React.ReactElement {
   const [Guides, SetGuides] = UseState<SnapGuide[]>([])
   const [SpaceHeld, SetSpaceHeld] = UseState(false)
   const Space = UseRef(false)
+  const SpaceFitPending = UseRef(false)
   const [Message, SetMessage] = UseState('')
   const [Working, SetWorking] = UseState(1)
   const WorkingRef = UseRef(1)
@@ -89,6 +93,12 @@ export default function App(): React.ReactElement {
   const TextEditing = UseRef<TextEditSession | null>(null)
   const TextComposing = UseRef(false)
   const AfterComposition = UseRef<(() => void)[]>([])
+  const [ArrowMode, SetArrowMode] = UseState(false)
+  const DrawingArrow = UseRef(false)
+  const [ArrowEditId, SetArrowEditId] = UseState<string | null>(null)
+  const ArrowEditing = UseRef<{ id: string; before: BoardItem[] } | null>(null)
+
+  function ArrowModeChange(Next: boolean): void { DrawingArrow.current = Next; SetArrowMode(Next) }
 
   function StartWork(): void { WorkingRef.current += 1; SetWorking(WorkingRef.current) }
   function EndWork(): void { WorkingRef.current -= 1; SetWorking(WorkingRef.current) }
@@ -105,9 +115,12 @@ export default function App(): React.ReactElement {
     SetDocument(Next)
   }
   function PublishItems(Next: BoardItem[]): void {
-    Publish({ ...Current.current, images: Next.filter((Item): Item is BoardImage => !('text' in Item)), texts: Next.filter((Item): Item is BoardText => 'text' in Item) })
+    const Resolved = ResolveArrowBindings(Next)
+    const Arrows = Resolved.filter((Item): Item is BoardArrow => 'arrow' in Item)
+    Publish({ ...Current.current, formatVersion: Arrows.length ? 4 : 3, images: Resolved.filter((Item): Item is BoardImage => 'asset' in Item), texts: Resolved.filter((Item): Item is BoardText => 'text' in Item), arrows: Arrows })
   }
   function Items(Next: BoardItem[], IsRecord = true): void {
+    Next = ResolveArrowBindings(Next)
     if (Fingerprint(Next) === Fingerprint(BoardItems(Current.current))) return
     if (IsRecord) { Past.current.push(BoardItems(Current.current)); Future.current = []; SetHistoryVersion((Value) => Value + 1) }
     PublishItems(Next)
@@ -155,6 +168,7 @@ export default function App(): React.ReactElement {
   function Reset(Next: BoardDocument, NextPath: string | null, NextAssets: ImageAsset[], MissingResources: string[] = []): void {
     const FixedFont = { ...Next, texts: Next.texts.map((Item) => ({ ...Item, text: { ...Item.text, font: { ...Item.text.font, family: TextFontFamily } } })) }
     TextEditing.current = null; SetTextEdit(null)
+    ArrowEditing.current = null; SetArrowEditId(null); ArrowModeChange(false)
     TextComposing.current = false; AfterComposition.current = []
     Session.current += 1
     ClearImageCache()
@@ -163,6 +177,7 @@ export default function App(): React.ReactElement {
     SetAssets(AssetMap.current)
     void DecodeAssets(NextAssets).catch(ShowError)
     Gesture.current = null
+    Space.current = false; SpaceFitPending.current = false; SetSpaceHeld(false)
     SetGuides([])
     SetMarquee(null)
     InternalClipboard.current = []
@@ -277,6 +292,7 @@ export default function App(): React.ReactElement {
     RefreshDirty()
   }
   function CommitText(Focus = false): boolean {
+    CommitArrow()
     if (TextComposing.current) { AfterComposition.current.push(() => { CommitText(Focus) }); return false }
     const Active = TextEditing.current
     if (!Active) return true
@@ -318,6 +334,7 @@ export default function App(): React.ReactElement {
   function AddText(Content = '文字', Edit = true): void {
     if (WorkingRef.current || Gesture.current || !CommitText()) return
     StartupAllowed.current = false
+    ArrowModeChange(false)
     CloseProjectMenu()
     const Position = Center()
     const Height = Math.min(600, Math.max(160, Content.split('\n').length * 36 + 24))
@@ -353,6 +370,39 @@ export default function App(): React.ReactElement {
     if (!Item) return
     PublishTextEdit({ id: Id, before: BoardItems(Current.current), draft: structuredClone(Item.text), inline: false, settings: true, settingsBefore: structuredClone(Item.text) })
   }
+  function CommitArrow(Focus = false): void {
+    const Active = ArrowEditing.current
+    if (!Active) return
+    if (Fingerprint(BoardItems(Current.current)) !== Fingerprint(Active.before)) {
+      Past.current.push(Active.before); Future.current = []; SetHistoryVersion((Value) => Value + 1)
+    }
+    ArrowEditing.current = null; SetArrowEditId(null)
+    RefreshDirty()
+    if (Focus) Canvas.current?.focus()
+  }
+  function CancelArrow(): void {
+    const Active = ArrowEditing.current
+    if (!Active) return
+    PublishItems(Active.before)
+    ArrowEditing.current = null; SetArrowEditId(null)
+    RefreshDirty(); Canvas.current?.focus()
+  }
+  function OpenArrowSettings(Id: string): void {
+    if (WorkingRef.current || Gesture.current || ArrowEditing.current?.id === Id || !CommitText()) return
+    ArrowModeChange(false)
+    ArrowEditing.current = { id: Id, before: BoardItems(Current.current) }; SetArrowEditId(Id)
+  }
+  function UpdateArrowStyle(Style: ArrowStyle): void {
+    Items(BoardItems(Current.current).map((Item) => {
+      if (!('arrow' in Item) || Item.id !== ArrowEditing.current?.id) return Item
+      const Points = ArrowEndpoints(Item)
+      return PositionArrow({ ...Item, arrow: { ...Item.arrow, ...Style } }, Points.start, Points.end, Points.bend)
+    }), false)
+  }
+  function ToggleArrowMode(): void {
+    if (WorkingRef.current || Gesture.current || !CommitText()) return
+    CloseProjectMenu(); ArrowModeChange(!DrawingArrow.current); Canvas.current?.focus()
+  }
   function CancelTextSettings(): void {
     const Active = TextEditing.current
     if (!Active) return
@@ -361,6 +411,9 @@ export default function App(): React.ReactElement {
     Canvas.current?.querySelector<HTMLTextAreaElement>('.text-inline-input')?.focus()
   }
   function DoubleClick(InputEvent: React.MouseEvent): void {
+    if (DrawingArrow.current) return
+    const Arrow = Current.current.arrows?.find((Item) => Selection.current.length === 1 && Selection.current[0] === Item.id)
+    if (Arrow) { OpenArrowSettings(Arrow.id); return }
     const Point = ScreenToWorld(LocalPoint(InputEvent.clientX, InputEvent.clientY), Current.current.viewport)
     // Pointer capture routes the final click to the canvas, so hit-test the visible text frames.
     const Item = [...Current.current.texts].reverse().find((Item) => Point.x >= Item.x && Point.x <= Item.x + Item.width && Point.y >= Item.y && Point.y <= Item.y + Item.height)
@@ -407,7 +460,10 @@ export default function App(): React.ReactElement {
   function DeleteSelected(): void {
     if (WorkingRef.current) return
     const Ids = new Set(Selection.current)
-    Items(BoardItems(Current.current).filter((Item) => !Ids.has(Item.id)))
+    Items(BoardItems(Current.current).filter((Item) => !Ids.has(Item.id)).map((Item) => !('arrow' in Item) ? Item : { ...Item, arrow: { ...Item.arrow,
+      startBinding: Item.arrow.startBinding && !Ids.has(Item.arrow.startBinding.id) ? Item.arrow.startBinding : undefined,
+      endBinding: Item.arrow.endBinding && !Ids.has(Item.arrow.endBinding.id) ? Item.arrow.endBinding : undefined,
+    } }))
     Select([])
   }
   function Copy(InputEvent: ClipboardEvent, Cut = false): void {
@@ -443,7 +499,14 @@ export default function App(): React.ReactElement {
   }
   function InsertCopies(Source: BoardItem[], Offset: number): void {
     if (WorkingRef.current) return
-    const Copies = Source.filter((Item) => 'text' in Item || AssetMap.current[Item.asset]).map((Item) => ({ ...structuredClone(Item), id: Uuid(), x: Item.x + Offset, y: Item.y + Offset }))
+    const Valid = Source.filter((Item) => !('asset' in Item) || AssetMap.current[Item.asset])
+    const Ids = new Map(Valid.map((Item) => [Item.id, Uuid()]))
+    const Copies = Valid.map((Item): BoardItem => ({ ...structuredClone(Item), id: Ids.get(Item.id)!, x: Item.x + Offset, y: Item.y + Offset,
+      ...('arrow' in Item ? { arrow: { ...structuredClone(Item.arrow),
+        startBinding: Item.arrow.startBinding && Ids.has(Item.arrow.startBinding.id) ? { ...Item.arrow.startBinding, id: Ids.get(Item.arrow.startBinding.id)! } : undefined,
+        endBinding: Item.arrow.endBinding && Ids.has(Item.arrow.endBinding.id) ? { ...Item.arrow.endBinding, id: Ids.get(Item.arrow.endBinding.id)! } : undefined,
+      } } : {}),
+    }))
     if (!Copies.length) return
     Items([...BoardItems(Current.current), ...Copies])
     Select(Copies.map((Item) => Item.id))
@@ -467,6 +530,10 @@ export default function App(): React.ReactElement {
     }
   }
   function Fit(): void { Publish({ ...Current.current, viewport: FitViewport(BoundingBox(BoardItems(Current.current)), ViewportSize(), 56) }) }
+  function FitSelection(): void {
+    const Bounds = BoundingBox(BoardItems(Current.current).filter((Item) => Selection.current.includes(Item.id)))
+    if (Bounds) Publish({ ...Current.current, viewport: FitViewport(Bounds, ViewportSize(), 56) })
+  }
   function ChangeZoom(Next: number): void {
     const Size = ViewportSize()
     Publish({ ...Current.current, viewport: ZoomAt(Current.current.viewport, { x: Size.width / 2, y: Size.height / 2 }, Next) })
@@ -487,7 +554,7 @@ export default function App(): React.ReactElement {
     }
     if (!Next) return false
     InputEvent.preventDefault()
-    Items(Next)
+    Items(DetachTransformedArrows(Next, Selection.current))
     return true
   }
 
@@ -504,6 +571,17 @@ export default function App(): React.ReactElement {
     Canvas.current!.setPointerCapture(InputEvent.pointerId)
     const Base = { start: Start, viewport: Current.current.viewport, before: BoardItems(Current.current), selected: [...Selection.current] }
     if (InputEvent.button === 1 || Space.current) { Gesture.current = { ...Base, kind: 'pan' }; return }
+    if (DrawingArrow.current) {
+      const Origin = ScreenToWorld(Start, Base.viewport)
+      const Endpoint = InputEvent.altKey ? { point: Origin, binding: undefined } : SnapArrowEndpoint(Origin, Base.before, 14 / Base.viewport.zoom)
+      const Axis = Endpoint.binding && ['top', 'bottom'].includes(Endpoint.binding.side) ? 'vertical' : 'horizontal'
+      const Arrow = CreateArrow(Uuid(), Endpoint.point, Endpoint.point, Axis)
+      Arrow.arrow.startBinding = Endpoint.binding
+      Gesture.current = { ...Base, kind: 'arrow-create', arrowId: Arrow.id }
+      StartupAllowed.current = false
+      Items([...Base.before, Arrow], false); Select([Arrow.id])
+      return
+    }
     if (Corner) { Gesture.current = { ...Base, kind: 'resize', corner: Corner }; return }
     if (ImageId) {
       let Ids = Selection.current
@@ -517,11 +595,37 @@ export default function App(): React.ReactElement {
       SetMarquee({ x: Start.x, y: Start.y, width: 0, height: 0 })
     }
   }
+  function BeginArrowHandle(InputEvent: React.PointerEvent, Item: BoardArrow, Kind: 'arrow-start' | 'arrow-end' | 'arrow-bend'): void {
+    if (InputEvent.button !== 0 || WorkingRef.current || !CommitText()) return
+    if (Space.current) { Begin(InputEvent, Item.id); return }
+    InputEvent.preventDefault(); InputEvent.stopPropagation()
+    Canvas.current!.setPointerCapture(InputEvent.pointerId)
+    Gesture.current = { kind: Kind, arrowId: Item.id, start: LocalPoint(InputEvent.clientX, InputEvent.clientY), viewport: Current.current.viewport, before: BoardItems(Current.current), selected: [...Selection.current] }
+  }
   function Move(InputEvent: React.PointerEvent): void {
     const Active = Gesture.current
     if (!Active) return
     const Point = LocalPoint(InputEvent.clientX, InputEvent.clientY)
     const Delta = { x: Point.x - Active.start.x, y: Point.y - Active.start.y }
+    if (Active.arrowId) {
+      const Item = (Active.kind === 'arrow-create' ? Current.current.arrows : Active.before.filter((Item): Item is BoardArrow => 'arrow' in Item))?.find((Item) => Item.id === Active.arrowId)
+      if (!Item) return
+      const Points = ArrowEndpoints(Item)
+      const Pointer = ScreenToWorld(Point, Active.viewport)
+      let Next: BoardArrow
+      if (Active.kind === 'arrow-bend') Next = PositionArrow(Item, Points.start, Points.end, Item.arrow.axis === 'horizontal' ? Pointer.x : Pointer.y)
+      else {
+        const Endpoint = InputEvent.altKey ? { point: Pointer, binding: undefined } : SnapArrowEndpoint(Pointer, Active.before, 14 / Active.viewport.zoom)
+        const IsStart = Active.kind === 'arrow-start'
+        const Start = IsStart ? Endpoint.point : Points.start, End = IsStart ? Points.end : Endpoint.point
+        const Arrow = { ...Item.arrow, ...(IsStart ? { startBinding: Endpoint.binding } : { endBinding: Endpoint.binding }) }
+        if (Active.kind === 'arrow-create' && !Arrow.startBinding) Arrow.axis = Math.abs(End.x - Start.x) >= Math.abs(End.y - Start.y) ? 'horizontal' : 'vertical'
+        const Bend = Active.kind === 'arrow-create' ? (Arrow.axis === 'horizontal' ? (Start.x + End.x) / 2 : (Start.y + End.y) / 2) : Points.bend
+        Next = PositionArrow({ ...Item, arrow: Arrow }, Start, End, Bend)
+      }
+      Items(Active.kind === 'arrow-create' ? [...Active.before, Next] : Active.before.map((Item) => Item.id === Next.id ? Next : Item), false)
+      return
+    }
     if (Active.kind === 'pan') {
       Publish({ ...Current.current, viewport: { ...Active.viewport, x: Active.viewport.x + Delta.x, y: Active.viewport.y + Delta.y } }); return
     }
@@ -556,16 +660,23 @@ export default function App(): React.ReactElement {
       Changed = SelectedImages.map((Item) => ({ ...Item, x: Item.x + Snapped.dx, y: Item.y + Snapped.dy }))
     }
     const ById = new Map(Changed.map((Item) => [Item.id, Item]))
-    Items(Active.before.map((Item) => ById.get(Item.id) ?? Item), false)
+    Items(DetachTransformedArrows(Active.before.map((Item) => ById.get(Item.id) ?? Item), Active.selected), false)
   }
   function Finish(InputEvent?: React.PointerEvent, Cancel = false): void {
     const Active = Gesture.current
     if (!Active) return
-    if (Active.kind === 'move' || Active.kind === 'resize') {
+    if (Active.kind === 'arrow-create') {
+      const Item = Current.current.arrows?.find((Item) => Item.id === Active.arrowId)
+      const Endpoints = Item && ArrowEndpoints(Item)
+      if (!Endpoints || Math.hypot(Endpoints.end.x - Endpoints.start.x, Endpoints.end.y - Endpoints.start.y) * Active.viewport.zoom < 6) Cancel = true
+      ArrowModeChange(false)
+    }
+    if (Active.kind === 'move' || Active.kind === 'resize' || Active.arrowId) {
       if (Cancel) Items(Active.before, false)
       else if (Fingerprint(Active.before) !== Fingerprint(BoardItems(Current.current))) {
         Past.current.push(Active.before); Future.current = []; SetHistoryVersion((Value) => Value + 1)
       }
+      if (Cancel && Active.arrowId) Select(Active.selected)
     }
     Gesture.current = null
     SetMarquee(null); SetGuides([])
@@ -583,7 +694,8 @@ export default function App(): React.ReactElement {
   }, [Path, Dirty])
   UseEffect(() => {
     const OutsideText = (InputEvent: PointerEvent): void => {
-      if (!TextEditing.current || !(InputEvent.target instanceof HTMLElement)) return
+      if (InputEvent.target instanceof Element && ArrowEditing.current && !InputEvent.target.closest('.arrow-editor, .arrow-settings-button')) CommitArrow()
+      if (!TextEditing.current || !(InputEvent.target instanceof Element)) return
       if (InputEvent.target.closest('.text-inline-input, .text-editor, .text-settings-button')) return
       CommitText()
     }
@@ -615,6 +727,7 @@ export default function App(): React.ReactElement {
     const Wheel = (InputEvent: WheelEvent) => {
       if (InputEvent.target instanceof HTMLElement && InputEvent.target.closest('.text-editor, .text-inline-input')) return
       InputEvent.preventDefault()
+      SpaceFitPending.current = false
       const Point = LocalPoint(InputEvent.clientX, InputEvent.clientY)
       const Scale = Math.exp(-InputEvent.deltaY * (InputEvent.deltaMode === 1 ? 0.025 : 0.0015))
       Publish({ ...Current.current, viewport: ZoomAt(Current.current.viewport, Point, Current.current.viewport.zoom * Scale) })
@@ -625,6 +738,7 @@ export default function App(): React.ReactElement {
   UseEffect(() => {
     const EditingText = (Target: EventTarget | null): boolean => IsFileDialogOpen() || Target instanceof HTMLInputElement || Target instanceof HTMLTextAreaElement || Target instanceof HTMLSelectElement || Boolean((Target as HTMLElement)?.isContentEditable)
     const Down = (InputEvent: KeyboardEvent) => {
+      if (Space.current && InputEvent.code !== 'Space') SpaceFitPending.current = false
       if (EditingText(InputEvent.target)) return
       const Modifier = InputEvent.ctrlKey || InputEvent.metaKey
       const Key = InputEvent.key.toLowerCase()
@@ -634,12 +748,25 @@ export default function App(): React.ReactElement {
         else if (Key === 'escape') { InputEvent.preventDefault(); CancelText() }
         return
       }
+      if (ArrowEditing.current) {
+        if (Modifier && Key === 's') { InputEvent.preventDefault(); void SaveBoard(InputEvent.shiftKey) }
+        else if (Modifier && Key === 'enter') { InputEvent.preventDefault(); CommitArrow(true) }
+        else if (Key === 'escape') { InputEvent.preventDefault(); CancelArrow() }
+        return
+      }
       if (ProjectMenuOpen) {
         if (Key === 'escape' || (Modifier && Key === 'o')) { InputEvent.preventDefault(); CloseProjectMenu(true) }
         return
       }
-      if (InputEvent.code === 'Space') { InputEvent.preventDefault(); Space.current = true; SetSpaceHeld(true); return }
-      if (Key === 'escape') { Finish(undefined, true); Select([]); return }
+      if (InputEvent.code === 'Space') {
+        if (InputEvent.isComposing || InputEvent.keyCode === 229) return
+        InputEvent.preventDefault()
+        if (Modifier || InputEvent.altKey || InputEvent.shiftKey || WorkingRef.current || Gesture.current) return
+        if (!InputEvent.repeat && !Space.current) { Space.current = true; SpaceFitPending.current = true; SetSpaceHeld(true) }
+        return
+      }
+      if (Key === 'escape') { Finish(undefined, true); ArrowModeChange(false); Select([]); return }
+      if (Gesture.current) return
       if (TransformSelection(InputEvent)) return
       const Action = Modifier ? ({
         a: () => Select(BoardItems(Current.current).map((Item) => Item.id)),
@@ -652,23 +779,38 @@ export default function App(): React.ReactElement {
       } as Record<string, (() => void)>)[Key]
       if (Action) { InputEvent.preventDefault(); Action() }
     }
-    const Up = (InputEvent: KeyboardEvent) => { if (InputEvent.code === 'Space') { Space.current = false; SetSpaceHeld(false) } }
-    const Blur = () => { Space.current = false; SetSpaceHeld(false); Finish(undefined, true) }
+    const Up = (InputEvent: KeyboardEvent) => {
+      if (InputEvent.code !== 'Space') return
+      const FitRequested = Space.current && SpaceFitPending.current
+      Space.current = false; SpaceFitPending.current = false; SetSpaceHeld(false)
+      // Wait until release to distinguish a tap from the existing Space + drag gesture.
+      if (FitRequested && !EditingText(InputEvent.target) && !TextEditing.current && !ArrowEditing.current && !DrawingArrow.current && !ProjectMenuOpen
+        && !WorkingRef.current && !Gesture.current && !InputEvent.isComposing
+        && !InputEvent.ctrlKey && !InputEvent.metaKey && !InputEvent.altKey && !InputEvent.shiftKey) FitSelection()
+    }
+    const PointerDown = () => { SpaceFitPending.current = false }
+    const Blur = () => { Space.current = false; SpaceFitPending.current = false; SetSpaceHeld(false); Finish(undefined, true) }
     const Copied = (InputEvent: ClipboardEvent) => { if (!TextEditing.current?.inline && !ProjectMenuOpen && !EditingText(InputEvent.target)) Copy(InputEvent) }
     const Cut = (InputEvent: ClipboardEvent) => { if (!TextEditing.current && !ProjectMenuOpen && !EditingText(InputEvent.target)) Copy(InputEvent, true) }
     const Pasted = (InputEvent: ClipboardEvent) => { if (!TextEditing.current && !ProjectMenuOpen && !EditingText(InputEvent.target)) Paste(InputEvent) }
     window.addEventListener('keydown', Down); window.addEventListener('keyup', Up); window.addEventListener('blur', Blur)
+    window.addEventListener('pointerdown', PointerDown, true)
     window.addEventListener('copy', Copied); window.addEventListener('cut', Cut); window.addEventListener('paste', Pasted)
     return () => {
       window.removeEventListener('keydown', Down); window.removeEventListener('keyup', Up); window.removeEventListener('blur', Blur)
+      window.removeEventListener('pointerdown', PointerDown, true)
       window.removeEventListener('copy', Copied); window.removeEventListener('cut', Cut); window.removeEventListener('paste', Pasted)
     }
   })
 
   const Bounds = BoundingBox(BoardItems(Document).filter((Item) => Selected.includes(Item.id)))
   const SelectedText = Selected.length === 1 ? Document.texts.find((Item) => Item.id === Selected[0]) : undefined
+  const SelectedArrow = Selected.length === 1 ? Document.arrows?.find((Item) => Item.id === Selected[0]) : undefined
+  const ArrowControls = SelectedArrow && ArrowDrawing(SelectedArrow)
+  const EditedArrow = Document.arrows?.find((Item) => Item.id === ArrowEditId)
   const View = Document.viewport
   const SettingsSize = SelectedText ? Math.min(64, Math.max(20, Math.min(SelectedText.width, SelectedText.height) * View.zoom * 0.32)) : 0
+  const ArrowSettingsSize = SelectedArrow ? Math.min(40, Math.max(24, Math.min(SelectedArrow.width, SelectedArrow.height) * View.zoom * 0.32)) : 0
   const SelectionStyle = Bounds ? { left: View.x + Bounds.x * View.zoom, top: View.y + Bounds.y * View.zoom, width: Bounds.width * View.zoom, height: Bounds.height * View.zoom } : undefined
   return <div className="app" data-history-version={HistoryVersion}>
     <header className="toolbar">
@@ -690,7 +832,7 @@ export default function App(): React.ReactElement {
       <span className="filename" title={Path || undefined}>{Path?.split(/[\\/]/).pop() || '未命名画板'}</span>
       {Working > 0 && <span className="working" role="status">处理中…</span>}
     </header>
-    <div ref={Canvas} data-testid="canvas" className={`canvas${SpaceHeld ? ' can-pan' : ''}`} tabIndex={-1}
+    <div ref={Canvas} data-testid="canvas" className={`canvas${SpaceHeld ? ' can-pan' : ArrowMode ? ' draw-arrow' : ''}`} tabIndex={-1}
       onPointerDown={(InputEvent) => Begin(InputEvent)} onPointerMove={Move} onPointerUp={(InputEvent) => Finish(InputEvent)} onPointerCancel={(InputEvent) => Finish(InputEvent, true)}
       onDoubleClick={DoubleClick}
       onContextMenu={(InputEvent) => InputEvent.preventDefault()} onDragOver={(InputEvent) => { InputEvent.preventDefault(); InputEvent.dataTransfer.dropEffect = 'copy' }} onDrop={(InputEvent) => void Drop(InputEvent)}>
@@ -710,24 +852,37 @@ export default function App(): React.ReactElement {
               OnSave={(SaveAs) => { void SaveBoard(SaveAs) }} OnComposition={TextComposition} /> : <MarkdownPreview Content={Text.content} ProjectPath={Path} />}
           </div>
         })}
+        {(Document.arrows ?? []).map((Item) => <ArrowView key={Item.id} Item={Item} Zoom={View.zoom} Selected={Selected.includes(Item.id)} OnPointerDown={(InputEvent) => Begin(InputEvent, Item.id)} />)}
       </div>
       <div className="canvas-tools" onPointerDown={(InputEvent) => InputEvent.stopPropagation()} onDoubleClick={(InputEvent) => InputEvent.stopPropagation()}>
         <button className="canvas-tool" data-testid="add-text" disabled={Working > 0} aria-label="创建文本" title="创建文本" onClick={() => AddText()}><TextCreateIcon /></button>
+        <button className="canvas-tool" data-testid="add-arrow" disabled={Working > 0} aria-label="创建箭头" aria-pressed={ArrowMode} title="创建箭头 · 拖动绘制，Alt 暂停连接，Esc 取消" onClick={ToggleArrowMode}><span className="tool-icon arrow-create-icon" aria-hidden="true" /></button>
       </div>
       {SelectedText && <button data-testid="text-settings" className="text-settings-button" aria-label="字体设置" title="字体设置" disabled={Working > 0}
         aria-expanded={Boolean(TextEdit?.settings)} style={{ left: View.x + (SelectedText.x + SelectedText.width) * View.zoom + 10, top: View.y + (SelectedText.y + SelectedText.height) * View.zoom - SettingsSize, width: SettingsSize, height: SettingsSize }}
         onPointerDown={(InputEvent) => { InputEvent.stopPropagation(); InputEvent.preventDefault() }} onDoubleClick={(InputEvent) => InputEvent.stopPropagation()} onClick={() => OpenTextSettings(SelectedText.id)}><TextSettingsIcon /></button>}
       {TextEdit?.settings && <TextEditor Resource={TextEdit.draft} OnChange={UpdateText} OnApply={() => CommitText(true)} OnSave={(SaveAs) => { void SaveBoard(SaveAs) }} OnCancel={CancelTextSettings} OnComposition={TextComposition} />}
-      {!Document.images.length && !Document.texts.length && <div className="empty"><span>拖入图片，开始整理参考</span><small>Ctrl+V 粘贴截图或文字 · 点击左侧图标添加文本</small></div>}
+      {SelectedArrow && <button data-testid="arrow-settings" className="text-settings-button arrow-settings-button" aria-label="线条设置" title="线条设置" disabled={Working > 0}
+        aria-expanded={ArrowEditId === SelectedArrow.id} style={{ left: View.x + (SelectedArrow.x + SelectedArrow.width) * View.zoom + 10, top: View.y + (SelectedArrow.y + SelectedArrow.height) * View.zoom - ArrowSettingsSize, width: ArrowSettingsSize, height: ArrowSettingsSize }}
+        onPointerDown={(InputEvent) => { InputEvent.stopPropagation(); InputEvent.preventDefault() }} onDoubleClick={(InputEvent) => InputEvent.stopPropagation()} onClick={() => OpenArrowSettings(SelectedArrow.id)}><span className="tool-icon arrow-settings-icon" aria-hidden="true" /></button>}
+      {EditedArrow && <ArrowEditor Style={EditedArrow.arrow} OnChange={UpdateArrowStyle} OnApply={() => CommitArrow(true)} OnCancel={CancelArrow} OnSave={(SaveAs) => { void SaveBoard(SaveAs) }} />}
+      {!Document.images.length && !Document.texts.length && !Document.arrows?.length && <div className="empty"><span>拖入图片，开始整理参考</span><small>Ctrl+V 粘贴截图或文字 · 点击左侧图标添加文本或箭头</small></div>}
       {Bounds && <div data-testid="selection-box" className="selection-box" style={SelectionStyle}>
-        {(['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((Corner) => <button key={Corner} data-testid={`resize-${Corner}`} className={`resize-handle ${Corner}`} aria-label={`调整尺寸 ${Corner}`} onPointerDown={(InputEvent) => Begin(InputEvent, undefined, Corner)} />)}
+        {!SelectedArrow && (['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((Corner) => <button key={Corner} data-testid={`resize-${Corner}`} className={`resize-handle ${Corner}`} aria-label={`调整尺寸 ${Corner}`} onPointerDown={(InputEvent) => Begin(InputEvent, undefined, Corner)} />)}
       </div>}
+      {SelectedArrow && ArrowControls && (['start', 'end', 'bend'] as const).map((Part) => {
+        const Point = Part === 'bend' ? ArrowControls.handle : ArrowControls.points[Part === 'start' ? 0 : 3]
+        return <button key={Part} data-testid={`arrow-${Part}`} className={`arrow-handle arrow-handle-${Part}`} aria-label={{ start: '调整起点', end: '调整终点', bend: '调整折线' }[Part]}
+          style={{ left: View.x + (SelectedArrow.x + Point.x) * View.zoom, top: View.y + (SelectedArrow.y + Point.y) * View.zoom,
+            cursor: Part === 'bend' ? (SelectedArrow.arrow.axis === 'horizontal' ? 'ew-resize' : 'ns-resize') : 'crosshair' }}
+          onPointerDown={(InputEvent) => BeginArrowHandle(InputEvent, SelectedArrow, `arrow-${Part}`)} onDoubleClick={(InputEvent) => InputEvent.stopPropagation()} />
+      })}
       {Marquee && <div data-testid="marquee" className="marquee" style={{ left: Marquee.x, top: Marquee.y, width: Marquee.width, height: Marquee.height }} />}
       {Guides.map((Guide, Index) => <div key={Index} data-testid="snap-guide" className={`snap-guide ${Guide.axis}`} style={Guide.axis === 'x' ? { left: View.x + Guide.position * View.zoom } : { top: View.y + Guide.position * View.zoom }} />)}
     </div>
     <footer className="statusbar">
-      <span data-testid="status">{Document.images.length} 张图片{Document.texts.length ? ` · ${Document.texts.length} 段文字` : ''} · 已选 {Selected.length}</span>
-      <span className="hint">滚轮缩放 · 中键 / 空格平移 · Shift 多选 · Alt 暂停吸附</span>
+      <span data-testid="status">{Document.images.length} 张图片{Document.texts.length ? ` · ${Document.texts.length} 段文字` : ''}{Document.arrows?.length ? ` · ${Document.arrows.length} 个箭头` : ''} · 已选 {Selected.length}</span>
+      <span className="hint" title="轻按空格适应选区；按住空格拖动仍可平移">滚轮缩放 · 空格适应选区 · 中键平移 · Shift 多选 · Alt 暂停吸附</span>
       <span className="message" role="status" title={Message}>{Message}</span>
       <button data-testid="zoom-out" aria-label="缩小" onClick={() => ChangeZoom(View.zoom / 1.2)}>−</button>
       <button data-testid="zoom" title="恢复 100%" onClick={() => ChangeZoom(1)}>{Math.round(View.zoom * 100)}%</button>

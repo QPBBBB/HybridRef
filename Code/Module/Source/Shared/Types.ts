@@ -10,7 +10,16 @@ export interface TextResource {
   padding: number
 }
 export interface BoardText { id: string; x: number; y: number; width: number; height: number; text: TextResource }
-export interface BoardDocument { format: 'hybridref'; formatVersion: 3; viewport: Viewport; images: BoardImage[]; texts: BoardText[] }
+export interface ArrowPoint { x: number; y: number }
+export interface ArrowBinding { id: string; side: 'left' | 'right' | 'top' | 'bottom'; offset: number }
+export interface ArrowStyle { color: string; thickness: number; dashed: boolean }
+export interface ArrowResource extends ArrowStyle {
+  start: ArrowPoint; end: ArrowPoint; axis: 'horizontal' | 'vertical'; bend: number
+  startBinding?: ArrowBinding; endBinding?: ArrowBinding
+}
+export interface BoardArrow { id: string; x: number; y: number; width: number; height: number; arrow: ArrowResource }
+export type BoardItem = BoardImage | BoardText | BoardArrow
+export interface BoardDocument { format: 'hybridref'; formatVersion: 3 | 4; viewport: Viewport; images: BoardImage[]; texts: BoardText[]; arrows?: BoardArrow[] }
 export interface ImageAsset { id: string; dataUrl: string; width: number; height: number; missing?: boolean }
 export interface LoadedBoard { path: string; document: BoardDocument; assets: ImageAsset[]; missingResources?: string[] }
 export interface CleanupResult extends LoadedBoard { removedFiles: number }

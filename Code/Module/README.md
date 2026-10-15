@@ -54,6 +54,8 @@ Playwright 报告放在 `Runtime/PlaywrightReport/`，失败附件放在 `Runtim
 
 项目自有文件、函数、变量及本地导入名称使用 PascalCase。`Code/Resource/` 下所有子目录和文件主体名称也必须使用 PascalCase，由 `check:naming` 递归检查。资源目录仅保留当前应用或开发脚本实际使用的素材；旧版应用图标、音效、捆绑字体和 Whisper 引擎已移除。工具要求的配置文件名、外部 API、YAML/HTTP 字段和自动生成的项目资源名保留其格式。
 
+箭头使用原生 SVG，不新增依赖。`Shared/Arrows.ts` 共享折线路径、端点连接和箭头形状，画布与 PNG 导出使用相同计算。箭头属于可选中对象，路径坐标相对其包围框保存，端点可引用图片/文本 ID 与边缘位置；移动目标时重算路径，组缩放后重新计算描边边距。第 4 版 `.hbr` 内联保存 `arrows`，没有箭头时仍写第 3 版。齿轮素材来自用户提供的 PNG，沿用 CSS alpha 蒙版显示白色，创建入口使用项目内 SVG。专项测试覆盖路径、绑定、撤销、复制后的 ID 重映射、格式校验、保存重开及不透明 PNG 的虚线像素。
+
 ## 来源与许可
 
 归档的 [Citadel](https://github.com/kannibalk1w1/Citadel) 来源版本为 `0.4.0`，提交 `be207e612a7e07ae78d26635e94d0e67169c8c6e`。相关材料保留在 [LICENSE](LICENSE)、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 [licenses/](licenses/)。

@@ -94,7 +94,7 @@ function ProjectUrl(BaseUrl, Project) {
 function BrowserCommand(Url, Platform = process.platform) {
   if (Platform === 'win32') {
     // URI dispatch can return success without displaying a browser window.
-    // Resolve the registered browser and ask it for an ordinary visible window.
+    // Resolve the registered browser, allowing it to reuse an existing window.
     const Script = `$ErrorActionPreference = 'Stop'
 $Url = '${Url.replace(/'/g, "''")}'
 $BrowserPath = $null
@@ -111,8 +111,7 @@ try {
 if ($BrowserPath) {
   $BrowserName = [IO.Path]::GetFileName($BrowserPath).ToLowerInvariant()
   $BrowserArguments = switch ($BrowserName) {
-    'firefox.exe' { @('-new-window', $Url) }
-    { $_ -in @('msedge.exe', 'chrome.exe') } { @('--new-window', $Url) }
+    'firefox.exe' { @('-new-tab', $Url) }
     default { @($Url) }
   }
   Start-Process -FilePath $BrowserPath -ArgumentList $BrowserArguments -WindowStyle Normal -ErrorAction Stop

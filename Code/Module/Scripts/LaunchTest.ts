@@ -159,12 +159,12 @@ Describe('default-browser command', () => {
   })
 
   It.runIf(process.platform === 'win32').each([
-    ['C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', '--new-window', true],
-    ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', '--new-window', true],
-    ['C:\\Program Files\\Mozilla Firefox\\firefox.exe', '-new-window', true],
+    ['C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', [], true],
+    ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', [], true],
+    ['C:\\Program Files\\Mozilla Firefox\\firefox.exe', ['-new-tab'], true],
     ['C:\\Other Browser\\browser.exe', null, true],
     ['C:\\Missing\\msedge.exe', null, false],
-  ])('dispatches %s using the actual PowerShell helper', (BrowserPath, NewWindow, Exists) => {
+  ])('dispatches %s without forcing a new window using the actual PowerShell helper', (BrowserPath, BrowserFlags, Exists) => {
     const Url = ProjectUrl('http://127.0.0.1:41234', "D:\\参考\\a'b #50%.hbr")
     const Command = BrowserCommand(Url, 'win32')
     const Script = Buffer.from(Command.args.at(-1), 'base64').toString('utf16le')
@@ -186,7 +186,7 @@ function Start-Process {
     const Result = SpawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(Mocks + Script, 'utf16le').toString('base64')], { encoding: 'utf8', windowsHide: true })
     Expect(Result.status, Result.stderr).toBe(0)
     const Dispatch = JSON.parse(Result.stdout.trim())
-    Expect(Dispatch).toEqual({ FilePath: NewWindow ? BrowserPath : Url, ArgumentList: NewWindow ? [NewWindow, Url] : null, WindowStyle: 'Normal' })
+    Expect(Dispatch).toEqual({ FilePath: BrowserFlags ? BrowserPath : Url, ArgumentList: BrowserFlags ? [...BrowserFlags, Url] : null, WindowStyle: 'Normal' })
   })
 
   It('reports a failed default-browser helper instead of claiming the page opened', async () => {

@@ -1,13 +1,14 @@
-import type { BoardImage, BoardText, ImageAsset } from '../Shared/Types'
+import type { BoardItem, ImageAsset } from '../Shared/Types'
+import { ArrowDash, ArrowDrawing } from '../Shared/Arrows'
 import { BoundingBox } from './Geometry'
 import { TextAppearance } from './TextAppearance'
 import { RenderMarkdownHtml, ResolveMarkdownImages } from './MarkdownContent'
 import MarkdownCss from './Markdown.css?inline'
 
 /** Render at 100% board scale, independent of viewport zoom and screen DPI. */
-export async function CreateSelectionSnapshot(Items: readonly (BoardImage | BoardText)[], Assets: Readonly<Record<string, ImageAsset>>, Background: string, ProjectPath: string | null): Promise<Blob> {
+export async function CreateSelectionSnapshot(Items: readonly BoardItem[], Assets: Readonly<Record<string, ImageAsset>>, Background: string, ProjectPath: string | null): Promise<Blob> {
   const Bounds = BoundingBox(Items)
-  if (!Bounds) throw new Error('请先选择图片或文本')
+  if (!Bounds) throw new Error('请先选择图片、文本或箭头')
   const Width = Math.ceil(Bounds.width), Height = Math.ceil(Bounds.height)
   // Reject excessive allocations explicitly; never silently reduce export resolution.
   if (!Number.isFinite(Width) || !Number.isFinite(Height) || Width < 1 || Height < 1
@@ -25,7 +26,7 @@ export async function CreateSelectionSnapshot(Items: readonly (BoardImage | Boar
   const Root = document.createElement('div')
   Object.assign(Root.style, { position: 'relative', width: `${Width}px`, height: `${Height}px`, overflow: 'hidden' })
   for (const Item of Items) {
-    const Element = document.createElement('text' in Item ? 'div' : 'img')
+    const Element = document.createElement('asset' in Item ? 'img' : 'div')
     Object.assign(Element.style, {
       position: 'absolute', display: 'block', margin: '0', left: `${Item.x - Bounds.x}px`, top: `${Item.y - Bounds.y}px`,
       width: `${Item.width}px`, height: `${Item.height}px`,
@@ -36,6 +37,18 @@ export async function CreateSelectionSnapshot(Items: readonly (BoardImage | Boar
       Markdown.className = 'markdown-content'
       Markdown.innerHTML = RenderMarkdownHtml(Item.text.content)
       Element.append(Markdown)
+    } else if ('arrow' in Item) {
+      const Drawing = ArrowDrawing(Item)
+      const Arrow = document.createElementNS(Namespace, 'svg')
+      Arrow.setAttribute('width', String(Item.width)); Arrow.setAttribute('height', String(Item.height))
+      Arrow.setAttribute('viewBox', `0 0 ${Item.width} ${Item.height}`)
+      const Line = document.createElementNS(Namespace, 'path')
+      for (const [Name, Value] of Object.entries({ d: Drawing.path, fill: 'none', stroke: Item.arrow.color, 'stroke-width': String(Item.arrow.thickness), 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })) Line.setAttribute(Name, Value)
+      const Dash = ArrowDash(Item.arrow)
+      if (Dash) Line.setAttribute('stroke-dasharray', Dash)
+      const Head = document.createElementNS(Namespace, 'polygon')
+      Head.setAttribute('points', Drawing.head); Head.setAttribute('fill', Item.arrow.color)
+      Arrow.append(Line, Head); Element.append(Arrow)
     } else {
       const Asset = Assets[Item.asset]
       if (!Asset) throw new Error('图片尚未加载完成，请稍后重试')

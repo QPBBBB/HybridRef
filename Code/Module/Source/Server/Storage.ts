@@ -5,7 +5,7 @@ import { basename as Basename, dirname as Dirname, extname as Extname, isAbsolut
 import { decode as DecodeBmp } from 'bmp-js'
 import Sharp from 'sharp'
 import { parseDocument as ParseDocument, stringify as Stringify } from 'yaml'
-import type { BoardDocument, BoardImage, BoardText, CleanupResult, ImageAsset, ImportResult, LoadedBoard, TextResource } from '../Shared/Types'
+import type { ArrowBinding, ArrowPoint, BoardArrow, BoardDocument, BoardImage, BoardText, CleanupResult, ImageAsset, ImportResult, LoadedBoard, TextResource } from '../Shared/Types'
 import { MarkdownImageSources, MarkdownLocalImagePath } from '../Shared/Markdown'
 import { DownloadMarkdownImage, MarkdownImageByteLimit } from './MarkdownImages'
 
@@ -70,6 +70,33 @@ function ValidateText(Value: unknown): TextResource {
   }
 }
 
+function ValidateArrowPoint(Value: unknown): ArrowPoint {
+  if (!IsRecord(Value)) throw new Error('箭头端点无效。')
+  return { x: RequireOpacity(Value.x, '箭头端点 x'), y: RequireOpacity(Value.y, '箭头端点 y') }
+}
+
+function ValidateArrowBinding(Value: unknown, Id: string): ArrowBinding | undefined {
+  if (Value === undefined) return undefined
+  if (!IsRecord(Value) || typeof Value.id !== 'string' || !TextId.test(Value.id) || Value.id === Id
+    || !['left', 'right', 'top', 'bottom'].includes(String(Value.side))) throw new Error('箭头连接对象无效。')
+  return { id: Value.id, side: Value.side as ArrowBinding['side'], offset: RequireOpacity(Value.offset, '箭头连接位置') }
+}
+
+function ValidateArrow(Value: unknown, Ids: Set<string>): BoardArrow {
+  if (!IsRecord(Value) || typeof Value.id !== 'string' || !TextId.test(Value.id)) throw new Error('箭头缺少安全有效的 ID。')
+  if (Ids.has(Value.id)) throw new Error(`画板包含重复的对象 ID：${Value.id}`)
+  Ids.add(Value.id)
+  if (!IsRecord(Value.arrow) || !['horizontal', 'vertical'].includes(String(Value.arrow.axis)) || typeof Value.arrow.dashed !== 'boolean') throw new Error('箭头样式无效。')
+  const Thickness = RequireNumber(Value.arrow.thickness, '线宽', true)
+  if (Thickness < 1 || Thickness > 24) throw new Error('箭头线宽必须在 1 到 24 之间。')
+  const StartBinding = ValidateArrowBinding(Value.arrow.startBinding, Value.id), EndBinding = ValidateArrowBinding(Value.arrow.endBinding, Value.id)
+  return { id: Value.id, x: RequireNumber(Value.x, '箭头 x'), y: RequireNumber(Value.y, '箭头 y'), width: RequireNumber(Value.width, '箭头宽度', true), height: RequireNumber(Value.height, '箭头高度', true),
+    arrow: { start: ValidateArrowPoint(Value.arrow.start), end: ValidateArrowPoint(Value.arrow.end), axis: Value.arrow.axis as 'horizontal' | 'vertical',
+      bend: RequireOpacity(Value.arrow.bend, '折线位置'), color: RequireColor(Value.arrow.color, '线条颜色'), thickness: Thickness, dashed: Value.arrow.dashed,
+      ...(StartBinding ? { startBinding: StartBinding } : {}), ...(EndBinding ? { endBinding: EndBinding } : {}),
+    } }
+}
+
 /** Construct the small schema explicitly: no editor state, timestamps or old Citadel fields. */
 function ValidateDocument(Value: unknown, Stored: false): BoardDocument
 function ValidateDocument(Value: unknown, Stored: true): StoredDocument
@@ -78,9 +105,10 @@ function ValidateDocument(Value: unknown, Stored: boolean): BoardDocument | Stor
   if (Value.formatVersion === 1 || 'boards' in Value) {
     throw new Error('这是旧版 HybridRef / Citadel 画板，精简版暂不支持读取或覆盖。请保留原文件，使用新的 .hbr 文件。')
   }
-  if (Value.format !== 'hybridref' || (Value.formatVersion !== 3 && !(Stored && Value.formatVersion === 2))) throw new Error('不支持此画板格式，请使用 HybridRef 第 2 或第 3 版 .hbr 文件。')
+  if (Value.format !== 'hybridref' || (Value.formatVersion !== 3 && Value.formatVersion !== 4 && !(Stored && Value.formatVersion === 2))) throw new Error('不支持此画板格式，请使用 HybridRef 第 2、3 或 4 版 .hbr 文件。')
   if (!IsRecord(Value.viewport) || !Array.isArray(Value.images)) throw new Error('画板缺少有效的 viewport 或 images。')
-  if (Value.formatVersion === 3 && !Array.isArray(Value.texts)) throw new Error('画板缺少有效的 texts。')
+  if (Value.formatVersion !== 2 && !Array.isArray(Value.texts)) throw new Error('画板缺少有效的 texts。')
+  if (Value.formatVersion === 4 && !Array.isArray(Value.arrows)) throw new Error('第 4 版画板缺少有效的 arrows。')
   const Ids = new Set<string>()
   const Images = Value.images.map((Entry, Index): BoardImage => {
     if (!IsRecord(Entry) || typeof Entry.id !== 'string' || !Entry.id.trim()) throw new Error(`第 ${Index + 1} 张图片缺少有效 ID。`)
@@ -109,9 +137,11 @@ function ValidateDocument(Value: unknown, Stored: boolean): BoardDocument | Stor
     }
     return { ...Geometry, text: ValidateText(Entry.text) }
   })
+  if (Value.arrows !== undefined && !Array.isArray(Value.arrows)) throw new Error('画板 arrows 必须是列表。')
+  const Arrows = ((Value.arrows ?? []) as unknown[]).map((Item) => ValidateArrow(Item, Ids))
   return {
     format: 'hybridref',
-    formatVersion: 3,
+    formatVersion: Arrows.length ? 4 : 3,
     viewport: {
       x: RequireNumber(Value.viewport.x, '视口 x'),
       y: RequireNumber(Value.viewport.y, '视口 y'),
@@ -119,6 +149,7 @@ function ValidateDocument(Value: unknown, Stored: boolean): BoardDocument | Stor
     },
     images: Images,
     texts: Texts,
+    ...(Arrows.length ? { arrows: Arrows } : {}),
   } as BoardDocument | StoredDocument
 }
 
@@ -453,7 +484,7 @@ export class ImageStore {
       if (!CachedImage) throw new Error(`图片资源不在内存中，无法保存：${ImageValue.asset}`)
       Assets.set(ImageValue.asset, CachedImage)
     }
-    for (const Item of [...Document.images, ...Document.texts]) {
+    for (const Item of [...Document.images, ...Document.texts, ...(Document.arrows ?? [])]) {
       Item.x = Rounded(Item.x)
       Item.y = Rounded(Item.y)
       Item.width = Rounded(Item.width)
