@@ -1,6 +1,6 @@
 import React, { useEffect as UseEffect, useRef as UseRef, useState as UseState } from 'react'
-import { EmptyDocument, EmptyTextResource, TextFontFamily, type BoardDocument, type BoardImage, type BoardText, type BoardArrow, type BoardItem, type ArrowStyle, type TextResource, type ImageAsset, type ImportResult, type LoadedBoard, type ProjectEntry, type Viewport } from '../Shared/Types'
-import { ArrowDrawing, ArrowEndpoints, CreateArrow, DetachTransformedArrows, PositionArrow, ResolveArrowBindings, SnapArrowEndpoint } from '../Shared/Arrows'
+import { EmptyDocument, EmptyTextResource, TextFontFamily, type BoardDocument, type BoardImage, type BoardText, type BoardArrow, type BoardItem, type ArrowBinding, type ArrowStyle, type TextResource, type ImageAsset, type ImportResult, type LoadedBoard, type ProjectEntry, type Viewport } from '../Shared/Types'
+import { ArrowDrawing, ArrowEndpoints, ConnectionHandles, CreateArrow, DetachTransformedArrows, PositionArrow, ResolveArrowBindings, SnapArrowEndpoint } from '../Shared/Arrows'
 import {
   BoundingBox, CenterImages, FitViewport, Intersects, NormalizeImages, PushImages,
   RectFromPoints, ResizeGroup, ResizeTextFrame, ScreenToWorld, SnapMove, ZoomAt,
@@ -38,6 +38,7 @@ type Gesture = {
   corner?: ResizeCorner
   additive?: boolean
   arrowId?: string
+  moved?: boolean
 }
 
 const Fingerprint = (Images: readonly BoardItem[]): string => JSON.stringify(Images)
@@ -47,6 +48,8 @@ const PushShortcuts: Partial<Record<string, PushDirection>> = { r: 'right', t: '
 const DirectionalPushShortcuts: Partial<Record<string, PushDirection>> = { arrowleft: 'left', arrowright: 'right', arrowup: 'top', arrowdown: 'bottom' }
 const CenterShortcuts: Partial<Record<string, CenterMode>> = { h: 'horizontal', v: 'vertical' }
 const NormalizeShortcuts: Partial<Record<string, NormalizeMode>> = { arrowright: 'width', arrowleft: 'height' }
+const ConnectionHandleOffset = 20
+const ConnectionSnapDistance = 14
 
 export default function App(): React.ReactElement {
   const [Document, SetDocument] = UseState<BoardDocument>(EmptyDocument)
@@ -97,6 +100,8 @@ export default function App(): React.ReactElement {
   const DrawingArrow = UseRef(false)
   const [ArrowEditId, SetArrowEditId] = UseState<string | null>(null)
   const ArrowEditing = UseRef<{ id: string; before: BoardItem[] } | null>(null)
+  const [Connecting, SetConnecting] = UseState(false)
+  const [ConnectionTarget, SetConnectionTarget] = UseState<ArrowBinding | undefined>()
 
   function ArrowModeChange(Next: boolean): void { DrawingArrow.current = Next; SetArrowMode(Next) }
 
@@ -166,7 +171,8 @@ export default function App(): React.ReactElement {
     Items[NextIndex]?.focus()
   }
   function Reset(Next: BoardDocument, NextPath: string | null, NextAssets: ImageAsset[], MissingResources: string[] = []): void {
-    const FixedFont = { ...Next, texts: Next.texts.map((Item) => ({ ...Item, text: { ...Item.text, font: { ...Item.text.font, family: TextFontFamily } } })) }
+    const Arrows = ResolveArrowBindings(BoardItems(Next)).filter((Item): Item is BoardArrow => 'arrow' in Item)
+    const FixedFont = { ...Next, arrows: Arrows, texts: Next.texts.map((Item) => ({ ...Item, text: { ...Item.text, font: { ...Item.text.font, family: TextFontFamily } } })) }
     TextEditing.current = null; SetTextEdit(null)
     ArrowEditing.current = null; SetArrowEditId(null); ArrowModeChange(false)
     TextComposing.current = false; AfterComposition.current = []
@@ -177,6 +183,7 @@ export default function App(): React.ReactElement {
     SetAssets(AssetMap.current)
     void DecodeAssets(NextAssets).catch(ShowError)
     Gesture.current = null
+    SetConnecting(false); SetConnectionTarget(undefined)
     Space.current = false; SpaceFitPending.current = false; SetSpaceHeld(false)
     SetGuides([])
     SetMarquee(null)
@@ -562,8 +569,8 @@ export default function App(): React.ReactElement {
     const Rect = Canvas.current!.getBoundingClientRect()
     return { x: ClientX - Rect.left, y: ClientY - Rect.top }
   }
-  function Begin(InputEvent: React.PointerEvent, ImageId?: string, Corner?: ResizeCorner): void {
-    if (WorkingRef.current || !CommitText()) return
+  function Begin(InputEvent: React.PointerEvent, ImageId?: string, Corner?: ResizeCorner, Connection?: ArrowBinding): void {
+    if (Gesture.current || WorkingRef.current || !CommitText()) return
     if (InputEvent.button !== 0 && InputEvent.button !== 1) return
     InputEvent.preventDefault()
     InputEvent.stopPropagation()
@@ -571,15 +578,19 @@ export default function App(): React.ReactElement {
     Canvas.current!.setPointerCapture(InputEvent.pointerId)
     const Base = { start: Start, viewport: Current.current.viewport, before: BoardItems(Current.current), selected: [...Selection.current] }
     if (InputEvent.button === 1 || Space.current) { Gesture.current = { ...Base, kind: 'pan' }; return }
-    if (DrawingArrow.current) {
+    if (DrawingArrow.current || Connection) {
       const Origin = ScreenToWorld(Start, Base.viewport)
-      const Endpoint = InputEvent.altKey ? { point: Origin, binding: undefined } : SnapArrowEndpoint(Origin, Base.before, 14 / Base.viewport.zoom)
+      const Source = Base.before.find((Item): Item is BoardImage | BoardText => Item.id === Connection?.id && !('arrow' in Item))
+      const Endpoint = Source ? ConnectionHandles(Source).find((Handle) => Handle.binding.side === Connection!.side)!
+        : InputEvent.altKey ? { point: Origin, binding: undefined } : SnapArrowEndpoint(Origin, Base.before, ConnectionSnapDistance / Base.viewport.zoom, ConnectionHandleOffset / Base.viewport.zoom)
       const Axis = Endpoint.binding && ['top', 'bottom'].includes(Endpoint.binding.side) ? 'vertical' : 'horizontal'
       const Arrow = CreateArrow(Uuid(), Endpoint.point, Endpoint.point, Axis)
       Arrow.arrow.startBinding = Endpoint.binding
       Gesture.current = { ...Base, kind: 'arrow-create', arrowId: Arrow.id }
+      CloseProjectMenu(); SetConnecting(true); SetConnectionTarget(undefined)
       StartupAllowed.current = false
       Items([...Base.before, Arrow], false); Select([Arrow.id])
+      Canvas.current?.focus()
       return
     }
     if (Corner) { Gesture.current = { ...Base, kind: 'resize', corner: Corner }; return }
@@ -596,11 +607,12 @@ export default function App(): React.ReactElement {
     }
   }
   function BeginArrowHandle(InputEvent: React.PointerEvent, Item: BoardArrow, Kind: 'arrow-start' | 'arrow-end' | 'arrow-bend'): void {
-    if (InputEvent.button !== 0 || WorkingRef.current || !CommitText()) return
+    if (InputEvent.button !== 0 || Gesture.current || WorkingRef.current || !CommitText()) return
     if (Space.current) { Begin(InputEvent, Item.id); return }
     InputEvent.preventDefault(); InputEvent.stopPropagation()
     Canvas.current!.setPointerCapture(InputEvent.pointerId)
     Gesture.current = { kind: Kind, arrowId: Item.id, start: LocalPoint(InputEvent.clientX, InputEvent.clientY), viewport: Current.current.viewport, before: BoardItems(Current.current), selected: [...Selection.current] }
+    SetConnecting(Kind !== 'arrow-bend'); SetConnectionTarget(undefined); Canvas.current?.focus()
   }
   function Move(InputEvent: React.PointerEvent): void {
     const Active = Gesture.current
@@ -608,6 +620,10 @@ export default function App(): React.ReactElement {
     const Point = LocalPoint(InputEvent.clientX, InputEvent.clientY)
     const Delta = { x: Point.x - Active.start.x, y: Point.y - Active.start.y }
     if (Active.arrowId) {
+      if (Active.kind === 'arrow-create' && !Active.moved) {
+        if (Math.hypot(Delta.x, Delta.y) < 6) return
+        Active.moved = true
+      }
       const Item = (Active.kind === 'arrow-create' ? Current.current.arrows : Active.before.filter((Item): Item is BoardArrow => 'arrow' in Item))?.find((Item) => Item.id === Active.arrowId)
       if (!Item) return
       const Points = ArrowEndpoints(Item)
@@ -615,11 +631,15 @@ export default function App(): React.ReactElement {
       let Next: BoardArrow
       if (Active.kind === 'arrow-bend') Next = PositionArrow(Item, Points.start, Points.end, Item.arrow.axis === 'horizontal' ? Pointer.x : Pointer.y)
       else {
-        const Endpoint = InputEvent.altKey ? { point: Pointer, binding: undefined } : SnapArrowEndpoint(Pointer, Active.before, 14 / Active.viewport.zoom)
         const IsStart = Active.kind === 'arrow-start'
+        const OtherBinding = IsStart ? Item.arrow.endBinding : Item.arrow.startBinding
+        const Endpoint = InputEvent.altKey ? { point: Pointer, binding: undefined } : SnapArrowEndpoint(Pointer, Active.before, ConnectionSnapDistance / Active.viewport.zoom, ConnectionHandleOffset / Active.viewport.zoom, OtherBinding?.id)
+        SetConnectionTarget(Endpoint.binding)
         const Start = IsStart ? Endpoint.point : Points.start, End = IsStart ? Points.end : Endpoint.point
         const Arrow = { ...Item.arrow, ...(IsStart ? { startBinding: Endpoint.binding } : { endBinding: Endpoint.binding }) }
-        if (Active.kind === 'arrow-create' && !Arrow.startBinding) Arrow.axis = Math.abs(End.x - Start.x) >= Math.abs(End.y - Start.y) ? 'horizontal' : 'vertical'
+        if (Active.kind === 'arrow-create') Arrow.axis = Arrow.startBinding
+          ? (['top', 'bottom'].includes(Arrow.startBinding.side) ? 'vertical' : 'horizontal')
+          : Math.abs(End.x - Start.x) >= Math.abs(End.y - Start.y) ? 'horizontal' : 'vertical'
         const Bend = Active.kind === 'arrow-create' ? (Arrow.axis === 'horizontal' ? (Start.x + End.x) / 2 : (Start.y + End.y) / 2) : Points.bend
         Next = PositionArrow({ ...Item, arrow: Arrow }, Start, End, Bend)
       }
@@ -668,7 +688,7 @@ export default function App(): React.ReactElement {
     if (Active.kind === 'arrow-create') {
       const Item = Current.current.arrows?.find((Item) => Item.id === Active.arrowId)
       const Endpoints = Item && ArrowEndpoints(Item)
-      if (!Endpoints || Math.hypot(Endpoints.end.x - Endpoints.start.x, Endpoints.end.y - Endpoints.start.y) * Active.viewport.zoom < 6) Cancel = true
+      if (!Active.moved || !Endpoints || Math.hypot(Endpoints.end.x - Endpoints.start.x, Endpoints.end.y - Endpoints.start.y) * Active.viewport.zoom < 6) Cancel = true
       ArrowModeChange(false)
     }
     if (Active.kind === 'move' || Active.kind === 'resize' || Active.arrowId) {
@@ -679,6 +699,7 @@ export default function App(): React.ReactElement {
       if (Cancel && Active.arrowId) Select(Active.selected)
     }
     Gesture.current = null
+    SetConnecting(false); SetConnectionTarget(undefined)
     SetMarquee(null); SetGuides([])
     if (InputEvent && Canvas.current?.hasPointerCapture(InputEvent.pointerId)) Canvas.current.releasePointerCapture(InputEvent.pointerId)
   }
@@ -765,7 +786,12 @@ export default function App(): React.ReactElement {
         if (!InputEvent.repeat && !Space.current) { Space.current = true; SpaceFitPending.current = true; SetSpaceHeld(true) }
         return
       }
-      if (Key === 'escape') { Finish(undefined, true); ArrowModeChange(false); Select([]); return }
+      if (Key === 'escape') {
+        const CancellingArrow = Boolean(Gesture.current?.arrowId)
+        Finish(undefined, true); ArrowModeChange(false)
+        if (!CancellingArrow) Select([])
+        return
+      }
       if (Gesture.current) return
       if (TransformSelection(InputEvent)) return
       const Action = Modifier ? ({
@@ -870,8 +896,18 @@ export default function App(): React.ReactElement {
       {Bounds && <div data-testid="selection-box" className="selection-box" style={SelectionStyle}>
         {!SelectedArrow && (['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((Corner) => <button key={Corner} data-testid={`resize-${Corner}`} className={`resize-handle ${Corner}`} aria-label={`调整尺寸 ${Corner}`} onPointerDown={(InputEvent) => Begin(InputEvent, undefined, Corner)} />)}
       </div>}
+      {!TextEdit?.inline && Working === 0 && [...Document.images, ...Document.texts].filter((Item) => Connecting || Selected.includes(Item.id)).map((Item) =>
+        ConnectionHandles(Item, ConnectionHandleOffset / View.zoom).map(({ handle: Handle, binding: Binding }) => {
+          const Active = ConnectionTarget?.id === Item.id && ConnectionTarget.side === Binding.side
+          return <button key={`${Item.id}-${Binding.side}`} data-testid="connection-handle" data-item-id={Item.id} data-side={Binding.side} data-active={Active}
+            className={`connection-handle connection-${Binding.side}${Connecting ? ' connecting' : ''}${Active ? ' active' : ''}`} aria-label={`从${{ left: '左', right: '右', top: '上', bottom: '下' }[Binding.side]}侧连接`} title="拖动创建连线"
+            style={{ left: View.x + Handle.x * View.zoom, top: View.y + Handle.y * View.zoom }}
+            onPointerDown={(InputEvent) => Begin(InputEvent, Item.id, undefined, Binding)} onDoubleClick={(InputEvent) => InputEvent.stopPropagation()}>
+            <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3 8h10M8 3l5 5-5 5" /></svg>
+          </button>
+        }))}
       {SelectedArrow && ArrowControls && (['start', 'end', 'bend'] as const).map((Part) => {
-        const Point = Part === 'bend' ? ArrowControls.handle : ArrowControls.points[Part === 'start' ? 0 : 3]
+        const Point = Part === 'bend' ? ArrowControls.handle : Part === 'start' ? ArrowControls.points[0] : ArrowControls.points.at(-1)!
         return <button key={Part} data-testid={`arrow-${Part}`} className={`arrow-handle arrow-handle-${Part}`} aria-label={{ start: '调整起点', end: '调整终点', bend: '调整折线' }[Part]}
           style={{ left: View.x + (SelectedArrow.x + Point.x) * View.zoom, top: View.y + (SelectedArrow.y + Point.y) * View.zoom,
             cursor: Part === 'bend' ? (SelectedArrow.arrow.axis === 'horizontal' ? 'ew-resize' : 'ns-resize') : 'crosshair' }}

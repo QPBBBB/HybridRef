@@ -1,6 +1,42 @@
-import type { ArrowBinding, ArrowPoint, ArrowStyle, BoardArrow, BoardItem } from './Types'
+import type { ArrowBinding, ArrowPoint, ArrowResource, ArrowStyle, BoardArrow, BoardImage, BoardItem, BoardText } from './Types'
 
 export const DefaultArrowStyle: ArrowStyle = { color: '#FFFFFF', thickness: 2, dashed: false }
+
+function PortDirection(Binding?: ArrowBinding): ArrowPoint {
+  return { x: Binding?.side === 'left' ? -1 : Binding?.side === 'right' ? 1 : 0,
+    y: Binding?.side === 'top' ? -1 : Binding?.side === 'bottom' ? 1 : 0 }
+}
+
+/** Leave and enter bound handles perpendicular to their edges, including unlike sides. */
+function ArrowRoute(Arrow: ArrowResource, Start: ArrowPoint, End: ArrowPoint, Bend: number): { points: ArrowPoint[]; handle: ArrowPoint; axis: ArrowResource['axis']; bend: number } {
+  const Clearance = Math.max(24, Arrow.thickness * 4)
+  const StartDirection = PortDirection(Arrow.startBinding), EndDirection = PortDirection(Arrow.endBinding)
+  const StartLead = { x: Start.x + StartDirection.x * Clearance, y: Start.y + StartDirection.y * Clearance }
+  const EndLead = { x: End.x + EndDirection.x * Clearance, y: End.y + EndDirection.y * Clearance }
+  let Axis: 'x' | 'y' = Arrow.axis === 'horizontal' ? 'x' : 'y'
+  function Limits(Coordinate: 'x' | 'y'): { min: number; max: number } {
+    return { min: Math.max(StartDirection[Coordinate] > 0 ? StartLead[Coordinate] : -Infinity, EndDirection[Coordinate] > 0 ? EndLead[Coordinate] : -Infinity),
+      max: Math.min(StartDirection[Coordinate] < 0 ? StartLead[Coordinate] : Infinity, EndDirection[Coordinate] < 0 ? EndLead[Coordinate] : Infinity) }
+  }
+  let Range = Limits(Axis)
+  if (Range.min > Range.max) {
+    Axis = Axis === 'x' ? 'y' : 'x'
+    Range = Limits(Axis)
+    Bend = (StartLead[Axis] + EndLead[Axis]) / 2
+  }
+  Bend = Math.max(Range.min, Math.min(Range.max, Bend))
+  // When both handles face away, leave room for a real detour rather than
+  // doubling back over the departure stroke at equal endpoint coordinates.
+  if (Arrow.startBinding && Arrow.endBinding && !StartDirection[Axis] && !EndDirection[Axis]) {
+    const Low = Math.min(StartLead[Axis], EndLead[Axis]), High = Math.max(StartLead[Axis], EndLead[Axis])
+    if (High - Low < Clearance * 2 && Bend > Low - Clearance && Bend < High + Clearance) Bend = Bend <= (Low + High) / 2 ? Low - Clearance : High + Clearance
+  }
+  const Horizontal = Axis === 'x'
+  const Middle = Horizontal ? [{ x: Bend, y: StartLead.y }, { x: Bend, y: EndLead.y }]
+    : [{ x: StartLead.x, y: Bend }, { x: EndLead.x, y: Bend }]
+  const Points = [Start, StartLead, ...Middle, EndLead, End].filter((Point, Index, All) => Index === 0 || Math.hypot(Point.x - All[Index - 1].x, Point.y - All[Index - 1].y) > 1e-8)
+  return { points: Points, handle: Horizontal ? { x: Bend, y: (StartLead.y + EndLead.y) / 2 } : { x: (StartLead.x + EndLead.x) / 2, y: Bend }, axis: Horizontal ? 'horizontal' : 'vertical', bend: Bend }
+}
 
 export function ArrowEndpoints(Item: BoardArrow): { start: ArrowPoint; end: ArrowPoint; bend: number } {
   return {
@@ -13,15 +49,16 @@ export function ArrowEndpoints(Item: BoardArrow): { start: ArrowPoint; end: Arro
 /** Keep a real positive frame around the stroke, including horizontal/vertical arrows. */
 export function PositionArrow(Item: BoardArrow, Start: ArrowPoint, End: ArrowPoint, Bend: number): BoardArrow {
   const Padding = Math.max(8, Item.arrow.thickness * 3)
-  const Horizontal = Item.arrow.axis === 'horizontal'
-  const Left = Math.min(Start.x, End.x, Horizontal ? Bend : Start.x) - Padding
-  const Top = Math.min(Start.y, End.y, Horizontal ? Start.y : Bend) - Padding
-  const Width = Math.max(Start.x, End.x, Horizontal ? Bend : Start.x) + Padding - Left
-  const Height = Math.max(Start.y, End.y, Horizontal ? Start.y : Bend) + Padding - Top
+  const Route = ArrowRoute(Item.arrow, Start, End, Bend)
+  const Horizontal = Route.axis === 'horizontal'
+  const Left = Math.min(...Route.points.map((Point) => Point.x)) - Padding
+  const Top = Math.min(...Route.points.map((Point) => Point.y)) - Padding
+  const Width = Math.max(...Route.points.map((Point) => Point.x)) + Padding - Left
+  const Height = Math.max(...Route.points.map((Point) => Point.y)) + Padding - Top
   return { ...Item, x: Left, y: Top, width: Width, height: Height, arrow: { ...Item.arrow,
     start: { x: (Start.x - Left) / Width, y: (Start.y - Top) / Height },
     end: { x: (End.x - Left) / Width, y: (End.y - Top) / Height },
-    bend: Horizontal ? (Bend - Left) / Width : (Bend - Top) / Height,
+    axis: Route.axis, bend: Horizontal ? (Route.bend - Left) / Width : (Route.bend - Top) / Height,
   } }
 }
 
@@ -39,21 +76,27 @@ export function BindingPoint(Binding: ArrowBinding, Items: readonly BoardItem[])
     y: Target.y + Target.height * (Side === 'top' ? 0 : Side === 'bottom' ? 1 : Offset) }
 }
 
-export function SnapArrowEndpoint(Point: ArrowPoint, Items: readonly BoardItem[], Threshold: number): { point: ArrowPoint; binding?: ArrowBinding } {
+/** Visual handles sit outside the frame; the saved connector meets its edge. */
+export function ConnectionHandles(Item: BoardImage | BoardText, Offset = 0): { point: ArrowPoint; handle: ArrowPoint; binding: ArrowBinding }[] {
+  return (['left', 'right', 'top', 'bottom'] as const).map((Side) => {
+    const Binding: ArrowBinding = { id: Item.id, side: Side, offset: 0.5 }
+    const Point = BindingPoint(Binding, [Item])!
+    return { point: Point, binding: Binding, handle: {
+      x: Point.x + (Side === 'left' ? -Offset : Side === 'right' ? Offset : 0),
+      y: Point.y + (Side === 'top' ? -Offset : Side === 'bottom' ? Offset : 0),
+    } }
+  })
+}
+
+export function SnapArrowEndpoint(Point: ArrowPoint, Items: readonly BoardItem[], Threshold: number, HandleOffset = 0, ExcludedId?: string): { point: ArrowPoint; binding?: ArrowBinding } {
   let Nearest: { point: ArrowPoint; binding?: ArrowBinding } = { point: Point }
   let Distance = Threshold
   for (const Item of [...Items].reverse()) {
-    if ('arrow' in Item) continue
-    const X = Math.max(0, Math.min(1, (Point.x - Item.x) / Item.width))
-    const Y = Math.max(0, Math.min(1, (Point.y - Item.y) / Item.height))
-    const Inside = Point.x >= Item.x && Point.x <= Item.x + Item.width && Point.y >= Item.y && Point.y <= Item.y + Item.height
-    const Candidates = (['left', 'right', 'top', 'bottom'] as const).map((Side) => {
-      const Binding = { id: Item.id, side: Side, offset: Side === 'left' || Side === 'right' ? Y : X }
-      const Position = BindingPoint(Binding, [Item])!
-      return { point: Position, binding: Binding, distance: Math.hypot(Point.x - Position.x, Point.y - Position.y) }
-    }).sort((A, B) => A.distance - B.distance)
-    if (Inside) return Candidates[0]
-    if (Candidates[0].distance < Distance) { Nearest = Candidates[0]; Distance = Candidates[0].distance }
+    if ('arrow' in Item || Item.id === ExcludedId) continue
+    for (const Candidate of ConnectionHandles(Item, HandleOffset)) {
+      const CandidateDistance = Math.min(Math.hypot(Point.x - Candidate.point.x, Point.y - Candidate.point.y), Math.hypot(Point.x - Candidate.handle.x, Point.y - Candidate.handle.y))
+      if (CandidateDistance < Distance) { Nearest = { point: Candidate.point, binding: Candidate.binding }; Distance = CandidateDistance }
+    }
   }
   return Nearest
 }
@@ -65,10 +108,13 @@ export function ResolveArrowBindings(Items: readonly BoardItem[]): BoardItem[] {
     const Previous = ArrowEndpoints(Item)
     const Start = (Item.arrow.startBinding && BindingPoint(Item.arrow.startBinding, Items)) || Previous.start
     const End = (Item.arrow.endBinding && BindingPoint(Item.arrow.endBinding, Items)) || Previous.end
-    if (Math.hypot(Start.x - Previous.start.x, Start.y - Previous.start.y, End.x - Previous.end.x, End.y - Previous.end.y) < 1e-8) return Item
     const Axis = Item.arrow.axis === 'horizontal' ? 'x' : 'y'
     const Bend = Previous.bend + (Start[Axis] - Previous.start[Axis] + End[Axis] - Previous.end[Axis]) / 2
-    return PositionArrow(Item, Start, End, Bend)
+    const Next = PositionArrow(Item, Start, End, Bend)
+    const Unchanged = Math.hypot(Start.x - Previous.start.x, Start.y - Previous.start.y, End.x - Previous.end.x, End.y - Previous.end.y) < 1e-8
+      && (['x', 'y', 'width', 'height'] as const).every((Key) => Math.abs(Next[Key] - Item[Key]) < 1e-8)
+      && Next.arrow.axis === Item.arrow.axis && Math.abs(Next.arrow.bend - Item.arrow.bend) < 1e-8
+    return Unchanged ? Item : Next
   })
 }
 
@@ -91,8 +137,8 @@ export function ArrowDrawing(Item: BoardArrow): { path: string; head: string; po
   const End = { x: Item.arrow.end.x * Item.width, y: Item.arrow.end.y * Item.height }
   const Horizontal = Item.arrow.axis === 'horizontal'
   const Bend = Item.arrow.bend * (Horizontal ? Item.width : Item.height)
-  const Points = Horizontal ? [Start, { x: Bend, y: Start.y }, { x: Bend, y: End.y }, End]
-    : [Start, { x: Start.x, y: Bend }, { x: End.x, y: Bend }, End]
+  const Route = ArrowRoute(Item.arrow, Start, End, Bend)
+  const Points = Route.points
   const Previous = [...Points.slice(0, -1)].reverse().find((Point) => Math.hypot(Point.x - End.x, Point.y - End.y) > 1e-8)
   const Length = Previous ? Math.hypot(End.x - Previous.x, End.y - Previous.y) : 1
   const Dx = Previous ? (End.x - Previous.x) / Length : 1, Dy = Previous ? (End.y - Previous.y) / Length : 0
@@ -101,7 +147,7 @@ export function ArrowDrawing(Item: BoardArrow): { path: string; head: string; po
   const Base = { x: End.x - Dx * Head, y: End.y - Dy * Head }
   return { path: Points.map((Point, Index) => `${Index ? 'L' : 'M'} ${Point.x} ${Point.y}`).join(' '),
     head: `${End.x},${End.y} ${Base.x - Dy * Spread},${Base.y + Dx * Spread} ${Base.x + Dy * Spread},${Base.y - Dx * Spread}`,
-    points: Points, handle: Horizontal ? { x: Bend, y: (Start.y + End.y) / 2 } : { x: (Start.x + End.x) / 2, y: Bend },
+    points: Points, handle: Route.handle,
   }
 }
 

@@ -1,5 +1,5 @@
 import { describe as Describe, expect as Expect, it as It } from 'vitest'
-import { ArrowDrawing, ArrowEndpoints, BindingPoint, CreateArrow, DetachTransformedArrows, PositionArrow, ResolveArrowBindings, SnapArrowEndpoint } from './Arrows'
+import { ArrowDrawing, ArrowEndpoints, BindingPoint, ConnectionHandles, CreateArrow, DetachTransformedArrows, PositionArrow, ResolveArrowBindings, SnapArrowEndpoint } from './Arrows'
 import { EmptyTextResource, type BoardArrow, type BoardImage, type BoardText } from './Types'
 
 const Image: BoardImage = { id: 'picture', asset: 'image', x: 10, y: 20, width: 200, height: 100 }
@@ -30,10 +30,41 @@ Describe('orthogonal arrows', () => {
     Expect(Points.end.x).toBeCloseTo(300); Expect(Points.end.y).toBeCloseTo(180); Expect(Points.bend).toBe(-90)
     Expect(Next.x).toBeLessThan(-90)
   })
-  It('snaps to object edges, uses the visible top object, and leaves distant endpoints free', () => {
-    Expect(SnapArrowEndpoint({ x: 215, y: 60 }, [Image], 14)).toMatchObject({ point: { x: 210, y: 60 }, binding: { id: 'picture', side: 'right', offset: 0.4 } })
+  It('snaps to edge centers, uses the visible top object, and leaves other points free', () => {
+    Expect(SnapArrowEndpoint({ x: 215, y: 60 }, [Image], 14)).toMatchObject({ point: { x: 210, y: 70 }, binding: { id: 'picture', side: 'right', offset: 0.5 } })
     Expect(SnapArrowEndpoint({ x: 400, y: 60 }, [Image], 14)).toEqual({ point: { x: 400, y: 60 } })
-    Expect(SnapArrowEndpoint({ x: 200, y: 60 }, [Image, { ...Text, x: 10, y: 20, width: 200, height: 100 }], 14).binding?.id).toBe('note')
+    Expect(SnapArrowEndpoint({ x: 200, y: 70 }, [Image, { ...Text, x: 10, y: 20, width: 200, height: 100 }], 14).binding?.id).toBe('note')
+    for (const Point of [{ x: 110, y: 70 }, { x: 210, y: 30 }]) Expect(SnapArrowEndpoint(Point, [Image], 14)).toEqual({ point: Point })
+  })
+  It.each([0.25, 1, 3])('snaps all four outside handles with a fixed screen tolerance at zoom %s', (Zoom) => {
+    const Handles = ConnectionHandles(Image, 20 / Zoom)
+    Expect(Handles).toHaveLength(4)
+    for (const Handle of Handles) {
+      const Pointer = { x: Handle.handle.x + 3 / Zoom, y: Handle.handle.y + 4 / Zoom }
+      Expect(SnapArrowEndpoint(Pointer, [Image], 14 / Zoom, 20 / Zoom)).toEqual({ point: Handle.point, binding: Handle.binding })
+      Expect(SnapArrowEndpoint(Pointer, [Image], 14 / Zoom, 20 / Zoom, Image.id)).toEqual({ point: Pointer })
+      Expect(Math.hypot(Handle.handle.x - Handle.point.x, Handle.handle.y - Handle.point.y) * Zoom).toBeCloseTo(20)
+    }
+  })
+  It('leaves and enters every pair of handle directions perpendicularly, with the route inside its frame', () => {
+    for (const Source of ConnectionHandles(Image)) for (const Target of ConnectionHandles(Text)) {
+      const Initial = CreateArrow('arrow', Source.point, Target.point, ['top', 'bottom'].includes(Source.binding.side) ? 'vertical' : 'horizontal')
+      const Arrow = PositionArrow({ ...Initial, arrow: { ...Initial.arrow, startBinding: Source.binding, endBinding: Target.binding } }, Source.point, Target.point, ArrowEndpoints(Initial).bend)
+      const Drawing = ArrowDrawing(Arrow), Points = Drawing.points
+      const First = { x: Points[1].x - Points[0].x, y: Points[1].y - Points[0].y }
+      const Last = { x: Points.at(-2)!.x - Points.at(-1)!.x, y: Points.at(-2)!.y - Points.at(-1)!.y }
+      for (const [Side, Delta] of [[Source.binding.side, First], [Target.binding.side, Last]] as const) {
+        const Horizontal = Side === 'left' || Side === 'right'
+        Expect(Delta[Horizontal ? 'y' : 'x']).toBeCloseTo(0)
+        Expect(Delta[Horizontal ? 'x' : 'y'] * (Side === 'left' || Side === 'top' ? -1 : 1)).toBeGreaterThan(0)
+      }
+      for (let Index = 0; Index < Points.length; Index++) {
+        const Point = Points[Index]
+        Expect(Point.x).toBeGreaterThanOrEqual(0); Expect(Point.x).toBeLessThanOrEqual(Arrow.width)
+        Expect(Point.y).toBeGreaterThanOrEqual(0); Expect(Point.y).toBeLessThanOrEqual(Arrow.height)
+        if (Index) Expect(Point.x === Points[Index - 1].x || Point.y === Points[Index - 1].y).toBe(true)
+      }
+    }
   })
   It('keeps fixed-width arrow strokes inside their frames after a small group resize', () => {
     const Arrow = CreateArrow('arrow', { x: 0, y: 0 }, { x: 300, y: 0 })
@@ -42,6 +73,24 @@ Describe('orthogonal arrows', () => {
     Expect(Next.height).toBeGreaterThanOrEqual(16)
     Expect(ArrowEndpoints(Next).start.x).toBeCloseTo(ArrowEndpoints(Small).start.x)
     Expect(ArrowEndpoints(Next).end.x).toBeCloseTo(ArrowEndpoints(Small).end.x)
+  })
+  It('reframes older bound routes even without endpoint movement and stays stable afterward', () => {
+    const Source = ConnectionHandles(Image).find((Handle) => Handle.binding.side === 'right')!
+    const Target = ConnectionHandles(Text).find((Handle) => Handle.binding.side === 'bottom')!
+    Source.binding.offset = 0.4
+    const Old = CreateArrow('arrow', BindingPoint(Source.binding, [Image])!, Target.point)
+    Old.arrow.startBinding = Source.binding
+    Old.arrow.endBinding = Target.binding
+    const Resolved = ResolveArrowBindings([Image, Text, Old])
+    const Arrow = Resolved[2] as BoardArrow
+    Expect(Arrow.arrow.startBinding?.offset).toBe(0.4)
+    Expect(Arrow.y + Arrow.height).toBeGreaterThan(Target.point.y + 24)
+    const Again = ResolveArrowBindings(Resolved)[2]
+    Expect(Again).toBe(Arrow)
+    for (const Point of ArrowDrawing(Arrow).points) {
+      Expect(Point.x).toBeGreaterThanOrEqual(0); Expect(Point.x).toBeLessThanOrEqual(Arrow.width)
+      Expect(Point.y).toBeGreaterThanOrEqual(0); Expect(Point.y).toBeLessThanOrEqual(Arrow.height)
+    }
   })
   It('follows resized and moved targets, retains missing bindings and remains stable on repeated updates', () => {
     const Arrow = CreateArrow('arrow', { x: 210, y: 70 }, { x: 500, y: 360 })

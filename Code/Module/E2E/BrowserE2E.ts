@@ -506,7 +506,7 @@ Test('Ctrl+C exports selected images and styled text as an opaque, lossless PNG 
   // Compare with independently rendered DOM text, including bold, alignment, wrapping and clipping.
   const Selection = (await Page.getByTestId('selection-box').boundingBox())!
   const Reference = await Page.screenshot({ clip: Selection, path: Join(ModuleRoot, 'Runtime/SnapshotCanvas.png'),
-    style: '.selection-box,.text-settings-button,[data-image-id="unselected"]{visibility:hidden}.board-image,.board-text{outline:none}' })
+    style: '.selection-box,.text-settings-button,.connection-handle,[data-image-id="unselected"]{visibility:hidden}.board-image,.board-text{outline:none}' })
   const ReferenceRaw = await Sharp(Reference).ensureAlpha().raw().toBuffer()
   let DifferentChannels = 0
   for (let Offset = 0; Offset < MixedRaw.data.length; Offset++) if (Math.abs(MixedRaw.data[Offset] - ReferenceRaw[Offset]) > 3) DifferentChannels++
@@ -1220,7 +1220,7 @@ Test('Markdown renders GFM, keeps source editable and saved, and exports the sam
   await Page.getByTestId('fit').click()
   await Page.getByTestId('zoom').click()
   const Reference = await Page.screenshot({ clip: (await Frame.boundingBox())!, path: Join(ModuleRoot, 'Runtime/MarkdownDom.png'),
-    style: '.selection-box,.text-settings-button{visibility:hidden}.board-text{outline:none}' })
+    style: '.selection-box,.text-settings-button,.connection-handle{visibility:hidden}.board-text{outline:none}' })
   const ReferenceRaw = await Sharp(Reference).ensureAlpha().raw().toBuffer()
   let DifferentChannels = 0
   for (let Index = 0; Index < Raw.data.length; Index++) if (Math.abs(Raw.data[Index] - ReferenceRaw[Index]) > 3) DifferentChannels++
@@ -1458,4 +1458,188 @@ Test('Alt leaves arrow endpoints free when drawing over an existing object', asy
   const Endpoints = await ReadArrowEndpoints(Page)
   Expect(Endpoints.start.x).toBeCloseTo(Start.x); Expect(Endpoints.start.y).toBeCloseTo(Start.y)
   Expect(Endpoints.end).toEqual({ x: 1100, y: 700 })
+})
+
+async function OpenConnectionBoard(Page: Page): Promise<{ image: string; text: string }> {
+  await Page.goto(ServiceUrl)
+  await Expect(Page.getByTestId('open')).toBeEnabled()
+  await DropImages(Page, [Sources[0]])
+  const Image = Page.getByTestId('image-item'), ImageBox = (await Image.boundingBox())!
+  await Page.mouse.move(ImageBox.x + ImageBox.width / 2, ImageBox.y + ImageBox.height / 2)
+  await Page.mouse.down(); await Page.mouse.move(320, 300, { steps: 6 }); await Page.mouse.up()
+  await Page.getByTestId('add-text').click()
+  await Page.getByTestId('text-content').fill('## 连接目标\n从四边 handle 拖动连线。')
+  await Page.keyboard.press('Control+Enter')
+  const Text = Page.getByTestId('text-item'), TextBox = (await Text.boundingBox())!
+  await Page.mouse.move(TextBox.x + TextBox.width / 2, TextBox.y + TextBox.height / 2)
+  await Page.mouse.down(); await Page.mouse.move(930, 580, { steps: 6 }); await Page.mouse.up()
+  return { image: (await Image.getAttribute('data-image-id'))!, text: (await Text.getAttribute('data-text-id'))! }
+}
+
+function ConnectionHandle(Page: Page, Id: string, Side: string) {
+  return Page.locator(`[data-testid="connection-handle"][data-item-id="${Id}"][data-side="${Side}"]`)
+}
+
+Test('four handles on images and text create bound lines directly, with snapping, undo and persistence', async ({ page: Page }) => {
+  const Ids = await OpenConnectionBoard(Page)
+  const Image = Page.getByTestId('image-item'), Text = Page.getByTestId('text-item')
+  await Image.click()
+  await Expect(Page.getByTestId('connection-handle')).toHaveCount(4)
+  await Expect(Page.getByTestId('resize-nw')).toBeVisible()
+  const ImageBox = (await Image.boundingBox())!, TextBox = (await Text.boundingBox())!
+  const Right = ConnectionHandle(Page, Ids.image, 'right'), RightBox = (await Right.boundingBox())!
+  Expect(RightBox.x + RightBox.width / 2).toBeCloseTo(ImageBox.x + ImageBox.width + 20)
+  Expect(RightBox.y + RightBox.height / 2).toBeCloseTo(ImageBox.y + ImageBox.height / 2)
+  await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/ConnectionHandles.png') })
+  await Page.mouse.move(RightBox.x + RightBox.width / 2, RightBox.y + RightBox.height / 2)
+  await Page.mouse.down()
+  await Expect(Page.getByTestId('connection-handle')).toHaveCount(8)
+  const Target = ConnectionHandle(Page, Ids.text, 'left'), TargetBox = (await Target.boundingBox())!
+  await Page.mouse.move(TargetBox.x + TargetBox.width / 2 + 4, TargetBox.y + TargetBox.height / 2 + 5, { steps: 8 })
+  await Expect(Target).toHaveAttribute('data-active', 'true')
+  const Ends = await ReadArrowEndpoints(Page)
+  Expect(Ends.start.x).toBeCloseTo(ImageBox.x + ImageBox.width)
+  Expect(Ends.start.y).toBeCloseTo(ImageBox.y + ImageBox.height / 2)
+  Expect(Ends.end.x).toBeCloseTo(TextBox.x)
+  Expect(Ends.end.y).toBeCloseTo(TextBox.y + TextBox.height / 2)
+  await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/ConnectionSnapping.png') })
+  await Page.mouse.up()
+  await Expect(Page.getByTestId('connection-handle')).toHaveCount(0)
+  await Expect(Page.getByTestId('arrow-item')).toHaveCount(1)
+  await Expect(Page.getByTestId('add-arrow')).toHaveAttribute('aria-pressed', 'false')
+  Expect(await Image.boundingBox()).toEqual(ImageBox); Expect(await Text.boundingBox()).toEqual(TextBox)
+  await Page.keyboard.press('Control+z'); await Expect(Page.getByTestId('arrow-item')).toHaveCount(0)
+  await Page.keyboard.press('Control+Shift+z'); await Expect(Page.getByTestId('arrow-item')).toHaveCount(1)
+  await Page.keyboard.press('Control+s'); await ChooseProjectName(Page, 'HandleConnections')
+  await Expect(Page).toHaveTitle('HandleConnections.hbr — HybridRef')
+  const Saved = Parse(await ReadFile(Join(ProjectDirectory, 'HandleConnections/HandleConnections.hbr'), 'utf8'))
+  Expect(Saved.arrows[0].arrow.startBinding).toEqual({ id: Ids.image, side: 'right', offset: 0.5 })
+  Expect(Saved.arrows[0].arrow.endBinding).toEqual({ id: Ids.text, side: 'left', offset: 0.5 })
+  await Page.reload()
+  await Expect(Page.getByTestId('arrow-item')).toHaveCount(1)
+  await Text.click()
+  const Resize = (await Page.getByTestId('resize-se').boundingBox())!
+  await Page.mouse.move(Resize.x + Resize.width / 2, Resize.y + Resize.height / 2)
+  await Page.mouse.down(); await Page.mouse.move(Resize.x + 80, Resize.y + 65, { steps: 6 }); await Page.mouse.up()
+  const Resized = (await Text.boundingBox())!, ResizedEnds = await ReadArrowEndpoints(Page)
+  Expect(ResizedEnds.end.x).toBeCloseTo(Resized.x)
+  Expect(ResizedEnds.end.y).toBeCloseTo(Resized.y + Resized.height / 2)
+  await Page.mouse.move(Resized.x + Resized.width / 2, Resized.y + Resized.height / 2)
+  await Page.mouse.down(); await Page.mouse.move(Resized.x + Resized.width / 2 - 60, Resized.y + Resized.height / 2 - 40, { steps: 6 }); await Page.mouse.up()
+  const Moved = (await Text.boundingBox())!, MovedEnds = await ReadArrowEndpoints(Page)
+  Expect(MovedEnds.end.x).toBeCloseTo(Moved.x)
+  Expect(MovedEnds.end.y).toBeCloseTo(Moved.y + Moved.height / 2)
+})
+
+Test('every source handle draws a line and can snap to a different target direction', async ({ page: Page }) => {
+  const Ids = await OpenConnectionBoard(Page)
+  const Cases = [
+    { source: 'image', side: 'left', target: 'text', end: 'top' },
+    { source: 'image', side: 'right', target: 'text', end: 'bottom' },
+    { source: 'text', side: 'top', target: 'image', end: 'right' },
+    { source: 'text', side: 'bottom', target: 'image', end: 'left' },
+  ] as const
+  for (const Case of Cases) {
+    await Page.getByTestId(`${Case.source}-item`).click()
+    const Handle = (await ConnectionHandle(Page, Ids[Case.source], Case.side).boundingBox())!
+    await Page.mouse.move(Handle.x + Handle.width / 2, Handle.y + Handle.height / 2); await Page.mouse.down()
+    const Target = ConnectionHandle(Page, Ids[Case.target], Case.end), Box = (await Target.boundingBox())!
+    await Page.mouse.move(Box.x + Box.width / 2, Box.y + Box.height / 2, { steps: 8 })
+    await Expect(Target).toHaveAttribute('data-active', 'true')
+    await Page.mouse.up()
+    await Expect(Page.getByTestId('arrow-item')).toHaveCount(1)
+    const Directions = await Page.getByTestId('arrow-line').evaluate((Element) => {
+      const Path = Element as SVGPathElement, Length = Path.getTotalLength()
+      const Start = Path.getPointAtLength(0), After = Path.getPointAtLength(1), End = Path.getPointAtLength(Length), Before = Path.getPointAtLength(Length - 1)
+      return [{ x: After.x - Start.x, y: After.y - Start.y }, { x: Before.x - End.x, y: Before.y - End.y }]
+    })
+    for (const [Index, Side] of [Case.side, Case.end].entries()) {
+      const Horizontal = Side === 'left' || Side === 'right'
+      Expect(Directions[Index][Horizontal ? 'y' : 'x']).toBeCloseTo(0)
+      Expect(Directions[Index][Horizontal ? 'x' : 'y'] * (Side === 'left' || Side === 'top' ? -1 : 1)).toBeGreaterThan(0)
+    }
+    await Page.keyboard.press('Control+z'); await Expect(Page.getByTestId('arrow-item')).toHaveCount(0)
+  }
+})
+
+Test('connection handles retain screen size while zoomed and cancel clicks, Escape and pointer cancellation', async ({ page: Page }) => {
+  const Ids = await OpenConnectionBoard(Page)
+  const Image = Page.getByTestId('image-item')
+  await Image.click()
+  const Handle = ConnectionHandle(Page, Ids.image, 'bottom'), Before = (await Handle.boundingBox())!
+  await Page.mouse.move(400, 320); await Page.mouse.wheel(0, 420)
+  await Expect.poll(async () => (await Image.boundingBox())!.width).toBeLessThan(200)
+  const ZoomedImage = (await Image.boundingBox())!, After = (await Handle.boundingBox())!
+  Expect(After.width).toBe(Before.width); Expect(After.height).toBe(Before.height)
+  Expect(After.y + After.height / 2).toBeCloseTo(ZoomedImage.y + ZoomedImage.height + 20, 1)
+  await Handle.click()
+  await Expect(Page.getByTestId('arrow-item')).toHaveCount(0)
+  await Expect(Handle).toBeVisible()
+  const Start = { x: After.x + After.width / 2, y: After.y + After.height / 2 }
+  await Page.mouse.move(Start.x, Start.y); await Page.mouse.down(); await Page.mouse.move(Start.x + 2, Start.y + 1); await Page.mouse.up()
+  await Expect(Page.getByTestId('arrow-item')).toHaveCount(0)
+  await Page.mouse.move(Start.x, Start.y); await Page.mouse.down(); await Page.mouse.move(650, 650, { steps: 6 })
+  await Expect(Page.getByTestId('arrow-item')).toHaveCount(1)
+  await Page.keyboard.press('Escape'); await Page.mouse.up()
+  await Expect(Page.getByTestId('arrow-item')).toHaveCount(0)
+  await Expect(Handle).toBeVisible()
+  await Page.mouse.move(Start.x, Start.y); await Page.mouse.down(); await Page.mouse.move(650, 650, { steps: 6 })
+  await Page.getByTestId('canvas').dispatchEvent('pointercancel')
+  await Page.mouse.up()
+  await Expect(Page.getByTestId('arrow-item')).toHaveCount(0)
+  await Expect(Handle).toBeVisible()
+  // Space over the same handle still pans, never creating an arrow.
+  await Page.keyboard.down('Space')
+  await Page.mouse.move(Start.x, Start.y); await Page.mouse.down(); await Page.mouse.move(Start.x + 45, Start.y + 35, { steps: 6 }); await Page.mouse.up()
+  await Page.keyboard.up('Space')
+  await Expect(Page.getByTestId('arrow-item')).toHaveCount(0)
+  Expect((await Image.boundingBox())!.x).toBeCloseTo(ZoomedImage.x + 45, 1)
+  // The same screen-space tolerance snaps to the visible handle after zoom/pan.
+  const NewHandle = (await Handle.boundingBox())!
+  await Page.mouse.move(NewHandle.x + NewHandle.width / 2, NewHandle.y + NewHandle.height / 2); await Page.mouse.down()
+  const Target = ConnectionHandle(Page, Ids.text, 'top'), TargetBox = (await Target.boundingBox())!
+  await Page.mouse.move(TargetBox.x + TargetBox.width / 2 + 7, TargetBox.y + TargetBox.height / 2 + 6, { steps: 6 })
+  await Expect(Target).toHaveAttribute('data-active', 'true')
+  await Page.mouse.up()
+  const TextBox = (await Page.getByTestId('text-item').boundingBox())!, Ends = await ReadArrowEndpoints(Page)
+  Expect(Ends.end.x).toBeCloseTo(TextBox.x + TextBox.width / 2, 1); Expect(Ends.end.y).toBeCloseTo(TextBox.y, 1)
+})
+
+Test('existing line endpoints reconnect to handles with Alt temporarily disabling snapping', async ({ page: Page }) => {
+  const Ids = await OpenConnectionBoard(Page)
+  await DrawArrow(Page, { x: 580, y: 220 }, { x: 680, y: 460 })
+  const Original = await ReadArrowEndpoints(Page)
+  const End = (await Page.getByTestId('arrow-end').boundingBox())!
+  await Page.mouse.move(End.x + End.width / 2, End.y + End.height / 2); await Page.mouse.down()
+  const Target = ConnectionHandle(Page, Ids.text, 'top'), TargetBox = (await Target.boundingBox())!
+  const Pointer = { x: TargetBox.x + TargetBox.width / 2 + 5, y: TargetBox.y + TargetBox.height / 2 + 3 }
+  await Page.mouse.move(Pointer.x, Pointer.y, { steps: 8 })
+  await Expect(Target).toHaveAttribute('data-active', 'true')
+  await Page.keyboard.down('Alt'); await Page.mouse.move(Pointer.x + 1, Pointer.y + 1)
+  await Expect(Target).toHaveAttribute('data-active', 'false')
+  Expect((await ReadArrowEndpoints(Page)).end).toEqual({ x: Pointer.x + 1, y: Pointer.y + 1 })
+  await Page.keyboard.up('Alt'); await Page.mouse.move(Pointer.x, Pointer.y)
+  await Expect(Target).toHaveAttribute('data-active', 'true')
+  await Page.mouse.up()
+  const TextBox = (await Page.getByTestId('text-item').boundingBox())!, Connected = await ReadArrowEndpoints(Page)
+  Expect(Connected.start).toEqual(Original.start)
+  Expect(Connected.end.x).toBeCloseTo(TextBox.x + TextBox.width / 2)
+  Expect(Connected.end.y).toBeCloseTo(TextBox.y)
+  const Start = (await Page.getByTestId('arrow-start').boundingBox())!
+  await Page.mouse.move(Start.x + Start.width / 2, Start.y + Start.height / 2); await Page.mouse.down()
+  const Source = ConnectionHandle(Page, Ids.image, 'right'), SourceBox = (await Source.boundingBox())!
+  await Page.mouse.move(SourceBox.x + SourceBox.width / 2, SourceBox.y + SourceBox.height / 2, { steps: 8 })
+  await Expect(Source).toHaveAttribute('data-active', 'true')
+  await Page.mouse.up()
+  await CaptureClipboard(Page)
+  const Png = Buffer.from((await CopySnapshot(Page)).png, 'base64')
+  await WriteFile(Join(ModuleRoot, 'Runtime/ConnectionSnapshot.png'), Png)
+  await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/ConnectionCrossDirections.png') })
+  await Page.keyboard.press('Control+z')
+  Expect(await ReadArrowEndpoints(Page)).toEqual(Connected)
+  await Page.keyboard.press('Control+z')
+  Expect(await ReadArrowEndpoints(Page)).toEqual(Original)
+  await Page.getByTestId('text-item').dblclick({ position: { x: 60, y: 50 } })
+  await Expect(Page.getByTestId('text-content')).toBeVisible()
+  await Expect(Page.getByTestId('connection-handle')).toHaveCount(0)
 })
