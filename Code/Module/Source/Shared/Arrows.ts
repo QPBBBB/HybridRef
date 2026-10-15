@@ -132,7 +132,7 @@ export function DetachTransformedArrows(Items: readonly BoardItem[], Selected: r
   })
 }
 
-export function ArrowDrawing(Item: BoardArrow): { path: string; head: string; points: ArrowPoint[]; handle: ArrowPoint } {
+export function ArrowDrawing(Item: BoardArrow): { path: string; shaft: string; head: string; points: ArrowPoint[]; handle: ArrowPoint } {
   const Start = { x: Item.arrow.start.x * Item.width, y: Item.arrow.start.y * Item.height }
   const End = { x: Item.arrow.end.x * Item.width, y: Item.arrow.end.y * Item.height }
   const Horizontal = Item.arrow.axis === 'horizontal'
@@ -145,7 +145,11 @@ export function ArrowDrawing(Item: BoardArrow): { path: string; head: string; po
   const Head = Math.min(Math.max(8, Item.arrow.thickness * 3), Length)
   const Spread = Math.min(Math.max(4, Item.arrow.thickness * 1.6), Length / 2)
   const Base = { x: End.x - Dx * Head, y: End.y - Dy * Head }
+  // Keep the full route for endpoint controls/hit testing. The visible stroke
+  // stops at the triangle base, so its width cannot poke through the tip.
+  const Shaft = [...Points.slice(0, -1), Base].filter((Point, Index, All) => Index === 0 || Math.hypot(Point.x - All[Index - 1].x, Point.y - All[Index - 1].y) > 1e-8)
   return { path: Points.map((Point, Index) => `${Index ? 'L' : 'M'} ${Point.x} ${Point.y}`).join(' '),
+    shaft: Shaft.map((Point, Index) => `${Index ? 'L' : 'M'} ${Point.x} ${Point.y}`).join(' '),
     head: `${End.x},${End.y} ${Base.x - Dy * Spread},${Base.y + Dx * Spread} ${Base.x + Dy * Spread},${Base.y - Dx * Spread}`,
     points: Points, handle: Route.handle,
   }

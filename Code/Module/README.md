@@ -56,6 +56,8 @@ Playwright 报告放在 `Runtime/PlaywrightReport/`，失败附件放在 `Runtim
 
 箭头使用原生 SVG，不新增依赖。`Shared/Arrows.ts` 共享折线路径、四向 handle、端点连接和箭头形状，画布与 PNG 导出使用相同计算。选中图片/文本后显示屏幕尺寸固定的外侧连接 handle；拖拽创建和端点重连均显示目标 handle，并用屏幕距离吸附到边的中点（offset 0.5），高亮当前目标。绑定保留旧有边缘 offset，路径按端口方向转折，包围框包含完整折线。箭头属于可选中对象，路径坐标相对其包围框保存，端点可引用图片/文本 ID 与边缘位置；移动目标时重算路径，组缩放后重新计算描边边距。第 4 版 `.hbr` 内联保存 `arrows`，没有箭头时仍写第 3 版。齿轮素材来自用户提供的 PNG，沿用 CSS alpha 蒙版显示白色，创建入口使用项目内 SVG。专项测试覆盖四向拖出、跨方向连接、缩放下吸附、取消、绑定、撤销、复制后的 ID 重映射、格式校验、保存重开及不透明 PNG 的虚线像素。
 
+单独选中箭头时只显示端点和折线 handle，不绘制 AABB 缩放框；设置齿轮在 AABB 正上方居中，与边界保持 10px 屏幕间距。`ArrowDrawing` 分别提供完整命中路径与截到三角底边的可见线段，画布和 PNG 使用同样的平头描边，防止粗线或虚线穿出箭头尖端。
+
 ## 来源与许可
 
 归档的 [Citadel](https://github.com/kannibalk1w1/Citadel) 来源版本为 `0.4.0`，提交 `be207e612a7e07ae78d26635e94d0e67169c8c6e`。相关材料保留在 [LICENSE](LICENSE)、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 [licenses/](licenses/)。

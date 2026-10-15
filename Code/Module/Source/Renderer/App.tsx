@@ -889,12 +889,12 @@ export default function App(): React.ReactElement {
         onPointerDown={(InputEvent) => { InputEvent.stopPropagation(); InputEvent.preventDefault() }} onDoubleClick={(InputEvent) => InputEvent.stopPropagation()} onClick={() => OpenTextSettings(SelectedText.id)}><TextSettingsIcon /></button>}
       {TextEdit?.settings && <TextEditor Resource={TextEdit.draft} OnChange={UpdateText} OnApply={() => CommitText(true)} OnSave={(SaveAs) => { void SaveBoard(SaveAs) }} OnCancel={CancelTextSettings} OnComposition={TextComposition} />}
       {SelectedArrow && <button data-testid="arrow-settings" className="text-settings-button arrow-settings-button" aria-label="线条设置" title="线条设置" disabled={Working > 0}
-        aria-expanded={ArrowEditId === SelectedArrow.id} style={{ left: View.x + (SelectedArrow.x + SelectedArrow.width) * View.zoom + 10, top: View.y + (SelectedArrow.y + SelectedArrow.height) * View.zoom - ArrowSettingsSize, width: ArrowSettingsSize, height: ArrowSettingsSize }}
+        aria-expanded={ArrowEditId === SelectedArrow.id} style={{ left: View.x + (SelectedArrow.x + SelectedArrow.width / 2) * View.zoom - ArrowSettingsSize / 2, top: View.y + SelectedArrow.y * View.zoom - ArrowSettingsSize - 10, width: ArrowSettingsSize, height: ArrowSettingsSize }}
         onPointerDown={(InputEvent) => { InputEvent.stopPropagation(); InputEvent.preventDefault() }} onDoubleClick={(InputEvent) => InputEvent.stopPropagation()} onClick={() => OpenArrowSettings(SelectedArrow.id)}><span className="tool-icon arrow-settings-icon" aria-hidden="true" /></button>}
       {EditedArrow && <ArrowEditor Style={EditedArrow.arrow} OnChange={UpdateArrowStyle} OnApply={() => CommitArrow(true)} OnCancel={CancelArrow} OnSave={(SaveAs) => { void SaveBoard(SaveAs) }} />}
       {!Document.images.length && !Document.texts.length && !Document.arrows?.length && <div className="empty"><span>拖入图片，开始整理参考</span><small>Ctrl+V 粘贴截图或文字 · 点击左侧图标添加文本或箭头</small></div>}
-      {Bounds && <div data-testid="selection-box" className="selection-box" style={SelectionStyle}>
-        {!SelectedArrow && (['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((Corner) => <button key={Corner} data-testid={`resize-${Corner}`} className={`resize-handle ${Corner}`} aria-label={`调整尺寸 ${Corner}`} onPointerDown={(InputEvent) => Begin(InputEvent, undefined, Corner)} />)}
+      {Bounds && !SelectedArrow && <div data-testid="selection-box" className="selection-box" style={SelectionStyle}>
+        {(['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((Corner) => <button key={Corner} data-testid={`resize-${Corner}`} className={`resize-handle ${Corner}`} aria-label={`调整尺寸 ${Corner}`} onPointerDown={(InputEvent) => Begin(InputEvent, undefined, Corner)} />)}
       </div>}
       {!TextEdit?.inline && Working === 0 && [...Document.images, ...Document.texts].filter((Item) => Connecting || Selected.includes(Item.id)).map((Item) =>
         ConnectionHandles(Item, ConnectionHandleOffset / View.zoom).map(({ handle: Handle, binding: Binding }) => {

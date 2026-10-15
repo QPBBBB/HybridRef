@@ -43,7 +43,7 @@ export async function CreateSelectionSnapshot(Items: readonly BoardItem[], Asset
       Arrow.setAttribute('width', String(Item.width)); Arrow.setAttribute('height', String(Item.height))
       Arrow.setAttribute('viewBox', `0 0 ${Item.width} ${Item.height}`)
       const Line = document.createElementNS(Namespace, 'path')
-      for (const [Name, Value] of Object.entries({ d: Drawing.path, fill: 'none', stroke: Item.arrow.color, 'stroke-width': String(Item.arrow.thickness), 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })) Line.setAttribute(Name, Value)
+      for (const [Name, Value] of Object.entries({ d: Drawing.shaft, fill: 'none', stroke: Item.arrow.color, 'stroke-width': String(Item.arrow.thickness), 'stroke-linecap': 'butt', 'stroke-linejoin': 'round' })) Line.setAttribute(Name, Value)
       const Dash = ArrowDash(Item.arrow)
       if (Dash) Line.setAttribute('stroke-dasharray', Dash)
       const Head = document.createElementNS(Namespace, 'polygon')

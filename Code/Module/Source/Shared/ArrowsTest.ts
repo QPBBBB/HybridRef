@@ -30,6 +30,19 @@ Describe('orthogonal arrows', () => {
     Expect(Points.end.x).toBeCloseTo(300); Expect(Points.end.y).toBeCloseTo(180); Expect(Points.bend).toBe(-90)
     Expect(Next.x).toBeLessThan(-90)
   })
+  It.each([1, 2, 12, 24])('ends the visible shaft at the head base while retaining the true tip at width %s', (Thickness) => {
+    for (const End of [{ x: 300, y: 0 }, { x: -300, y: 0 }, { x: 0, y: 300 }, { x: 0, y: -300 }, { x: 5, y: 0 }]) {
+      const Initial = CreateArrow('arrow', { x: 0, y: 0 }, End, End.x ? 'horizontal' : 'vertical')
+      const Arrow = PositionArrow({ ...Initial, arrow: { ...Initial.arrow, thickness: Thickness } }, { x: 0, y: 0 }, End, ArrowEndpoints(Initial).bend)
+      const Drawing = ArrowDrawing(Arrow)
+      const [Tip, First, Second] = Drawing.head.split(' ').map((Point) => Point.split(',').map(Number))
+      const ShaftEnd = Drawing.shaft.split(' ').slice(-2).map(Number)
+      Expect(ShaftEnd[0]).toBeCloseTo((First[0] + Second[0]) / 2)
+      Expect(ShaftEnd[1]).toBeCloseTo((First[1] + Second[1]) / 2)
+      Expect(Drawing.points.at(-1)).toEqual({ x: Tip[0], y: Tip[1] })
+      Expect(Math.hypot(Tip[0] - ShaftEnd[0], Tip[1] - ShaftEnd[1])).toBeGreaterThan(0)
+    }
+  })
   It('snaps to edge centers, uses the visible top object, and leaves other points free', () => {
     Expect(SnapArrowEndpoint({ x: 215, y: 60 }, [Image], 14)).toMatchObject({ point: { x: 210, y: 70 }, binding: { id: 'picture', side: 'right', offset: 0.5 } })
     Expect(SnapArrowEndpoint({ x: 400, y: 60 }, [Image], 14)).toEqual({ point: { x: 400, y: 60 } })

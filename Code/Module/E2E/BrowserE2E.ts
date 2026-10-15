@@ -262,7 +262,11 @@ Test('canvas supports dragging, proportional resize, zoom, pan and snapping', as
 
 async function ExpectSelectionFitted(Page: Page): Promise<void> {
   const Canvas = (await Page.getByTestId('canvas').boundingBox())!
-  const Selected = (await Page.getByTestId('selection-box').boundingBox())!
+  const Selected = await Page.locator('.board-image.selected,.board-text.selected,.board-arrow.selected').evaluateAll((Items) => {
+    const Bounds = Items.map((Item) => Item.getBoundingClientRect())
+    const Left = Math.min(...Bounds.map((Box) => Box.left)), Top = Math.min(...Bounds.map((Box) => Box.top))
+    return { x: Left, y: Top, width: Math.max(...Bounds.map((Box) => Box.right)) - Left, height: Math.max(...Bounds.map((Box) => Box.bottom)) - Top }
+  })
   Expect(Selected.x + Selected.width / 2).toBeCloseTo(Canvas.x + Canvas.width / 2, 1)
   Expect(Selected.y + Selected.height / 2).toBeCloseTo(Canvas.y + Canvas.height / 2, 1)
   const HorizontalMargin = (Canvas.width - Selected.width) / 2
@@ -1293,7 +1297,7 @@ async function DrawArrow(Page: Page, Start: { x: number; y: number }, End: { x: 
 }
 
 async function ReadArrowEndpoints(Page: Page): Promise<{ start: { x: number; y: number }; end: { x: number; y: number } }> {
-  return Page.getByTestId('arrow-line').first().evaluate((Element) => {
+  return Page.getByTestId('arrow-hit').first().evaluate((Element) => {
     const Path = Element as SVGPathElement
     const Start = Path.getPointAtLength(0).matrixTransform(Path.getScreenCTM()!)
     const End = Path.getPointAtLength(Path.getTotalLength()).matrixTransform(Path.getScreenCTM()!)
@@ -1307,6 +1311,10 @@ Test('arrows support orthogonal drawing, endpoint and bend editing, styles, PNG 
   await DrawArrow(Page, { x: 260, y: 200 }, { x: 880, y: 500 })
   const Arrow = Page.getByTestId('arrow-item'), Line = Page.getByTestId('arrow-line')
   await Expect(Arrow).toHaveCount(1)
+  await Expect(Page.getByTestId('selection-box')).toHaveCount(0)
+  await Expect(Page.locator('.resize-handle')).toHaveCount(0)
+  await Expect(Page.getByTestId('arrow-start')).toBeVisible()
+  await Expect(Page.getByTestId('arrow-end')).toBeVisible()
   await Expect(Page.getByTestId('add-arrow')).toHaveAttribute('aria-pressed', 'false')
   await Expect(Line).toHaveAttribute('stroke', '#FFFFFF')
   await Expect(Page.getByTestId('arrow-settings')).toHaveCSS('color', 'rgb(255, 255, 255)')
@@ -1342,8 +1350,13 @@ Test('arrows support orthogonal drawing, endpoint and bend editing, styles, PNG 
   await Page.keyboard.press('Control+z'); await Expect(Line).toHaveAttribute('stroke', '#FFFFFF')
   await Page.keyboard.press('Control+Shift+z'); await Expect(Line).toHaveAttribute('stroke', '#ff4400')
   const Settings = (await Page.getByTestId('arrow-settings').boundingBox())!, Box = (await Arrow.boundingBox())!
-  Expect(Settings.x).toBeGreaterThan(Box.x + Box.width)
-  Expect(Settings.y + Settings.height).toBeCloseTo(Box.y + Box.height)
+  Expect(Settings.x + Settings.width / 2).toBeCloseTo(Box.x + Box.width / 2)
+  Expect(Settings.y + Settings.height + 10).toBeCloseTo(Box.y)
+  await Page.getByTestId('zoom-in').click()
+  const ZoomedSettings = (await Page.getByTestId('arrow-settings').boundingBox())!, ZoomedBox = (await Arrow.boundingBox())!
+  Expect(ZoomedSettings.x + ZoomedSettings.width / 2).toBeCloseTo(ZoomedBox.x + ZoomedBox.width / 2, 1)
+  Expect(ZoomedSettings.y + ZoomedSettings.height + 10).toBeCloseTo(ZoomedBox.y, 1)
+  await Page.getByTestId('zoom').click()
   await Page.getByTestId('arrow-settings').click()
   await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/ArrowSettings.png') })
   await Page.getByTestId('arrow-apply').click()
@@ -1642,4 +1655,45 @@ Test('existing line endpoints reconnect to handles with Alt temporarily disablin
   await Page.getByTestId('text-item').dblclick({ position: { x: 60, y: 50 } })
   await Expect(Page.getByTestId('text-content')).toBeVisible()
   await Expect(Page.getByTestId('connection-handle')).toHaveCount(0)
+})
+
+Test('arrow strokes do not protrude through the tip in the canvas or copied PNG', async ({ page: Page }) => {
+  await Page.goto(ServiceUrl)
+  await Expect(Page.getByTestId('open')).toBeEnabled()
+  const Start = { x: 500, y: 450 }
+  const Ends = [{ x: 800, y: 450 }, { x: 200, y: 450 }, { x: 500, y: 700 }, { x: 500, y: 200 }]
+  for (const [Index, End] of Ends.entries()) {
+    await DrawArrow(Page, Start, End)
+    await Page.getByTestId('arrow-settings').click()
+    await Page.getByTestId('arrow-thickness').fill('12')
+    if (Index % 2) await Page.getByTestId('arrow-dashed').click()
+    await Page.getByTestId('arrow-apply').click()
+    await Expect(Page.getByTestId('selection-box')).toHaveCount(0)
+    const Arrow = Page.getByTestId('arrow-item')
+    const Tip = await Arrow.locator('polygon').evaluate((Element) => {
+      const Point = (Element as SVGPolygonElement).points.getItem(0)
+      return { x: Point.x, y: Point.y }
+    })
+    const Length = Math.hypot(End.x - Start.x, End.y - Start.y)
+    const Dx = (End.x - Start.x) / Length, Dy = (End.y - Start.y) / Length
+    await CaptureClipboard(Page)
+    const Png = Buffer.from((await CopySnapshot(Page)).png, 'base64')
+    await Page.keyboard.press('Escape')
+    const Canvas = await Arrow.screenshot()
+    for (const Bytes of [Png, Canvas]) {
+      const Raw = await Sharp(Bytes).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+      const Pixel = (Forward: number, Across = 0): number[] => {
+        const X = Math.round(Tip.x + Dx * Forward - Dy * Across), Y = Math.round(Tip.y + Dy * Forward + Dx * Across)
+        const Offset = (Y * Raw.info.width + X) * 4
+        return Array.from(Raw.data.subarray(Offset, Offset + 4))
+      }
+      // The old round line cap painted six extra pixels beyond a 12px tip.
+      for (let Distance = 1; Distance <= 6; Distance++) Expect(Pixel(Distance)).toEqual([12, 13, 15, 255])
+      Expect(Pixel(-2, 4)).toEqual([12, 13, 15, 255])
+      Expect(Pixel(-10)).toEqual([255, 255, 255, 255])
+    }
+    if (!Index) await WriteFile(Join(ModuleRoot, 'Runtime/ArrowTip.png'), Png)
+    await Page.keyboard.press('Control+a'); await Page.keyboard.press('Delete')
+    await Expect(Arrow).toHaveCount(0)
+  }
 })
