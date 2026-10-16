@@ -854,7 +854,7 @@ export default function App(): React.ReactElement {
         </div>}
       </div>
       <button data-testid="save" className="save-button" aria-label={Dirty ? '保存（有未保存的修改）' : '保存'} disabled={Working > PendingSaves.current} title="保存 · Ctrl+S / 另存为 · Ctrl+Shift+S" onClick={() => void SaveBoard()}>保存{Dirty && <span className="save-dirty" aria-hidden="true">*</span>}</button>
-      <button data-testid="cleanup-resources" disabled={Working > 0} title="保存当前画板，并清理资源目录中未被引用的 PNG / YAML 文件" onClick={() => void CleanupResources()}>清理失效资源</button>
+      <button data-testid="cleanup-resources" disabled={Working > 0} title="保存当前画板，并清理资源目录中未被引用的 PNG / YAML 和配置文件" onClick={() => void CleanupResources()}>清理失效资源</button>
       <span className="filename" title={Path || undefined}>{Path?.split(/[\\/]/).pop() || '未命名画板'}</span>
       {Working > 0 && <span className="working" role="status">处理中…</span>}
     </header>

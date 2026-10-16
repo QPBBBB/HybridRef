@@ -1,5 +1,7 @@
 import { createHash as CreateHash } from 'node:crypto'
-import { cpSync as CpSync, existsSync as ExistsSync, mkdirSync as MkdirSync, mkdtempSync as MkdtempSync, readFileSync as ReadFileSync, readdirSync as ReaddirSync, rmSync as RmSync, symlinkSync as SymlinkSync, writeFileSync as WriteFileSync } from 'node:fs'
+import FsPromises from 'node:fs/promises'
+import { syncBuiltinESMExports as SyncBuiltinEsmExports } from 'node:module'
+import { cpSync as CpSync, existsSync as ExistsSync, mkdirSync as MkdirSync, mkdtempSync as MkdtempSync, readFileSync as ReadFileSync, readdirSync as ReaddirSync, rmSync as RmSync, statSync as StatSync, symlinkSync as SymlinkSync, writeFileSync as WriteFileSync } from 'node:fs'
 import { tmpdir as Tmpdir } from 'node:os'
 import { basename as Basename, join as Join, resolve as Resolve } from 'node:path'
 import { encode as EncodeBmp } from 'bmp-js'
@@ -18,6 +20,7 @@ function Temp(): string {
 }
 AfterEach(() => {
   Vi.restoreAllMocks()
+  SyncBuiltinEsmExports()
   for (const Path of Roots.splice(0)) {
     if (!Resolve(Path).startsWith(Join(Tmpdir(), 'hybridref-store-'))) throw new Error('Unsafe test cleanup path')
     RmSync(Path, { recursive: true, force: true })
@@ -48,6 +51,150 @@ const CollisionPngs = [
 ].map((Text) => Buffer.from(Text, 'base64'))
 
 Describe('HybridRef image and text storage', () => {
+  It('stores each texture layout beside its PNG and leaves unrelated files untouched when moving it', async () => {
+    const Root = Temp(), Store = new ImageStore(), Path = Join(Root, 'Separate.hbr')
+    const Imported = await Store.ImportBuffers(CollisionPngs.map((Bytes, Index) => ({ name: `${Index}.png`, bytes: Bytes })))
+    const Doc = Board(Imported.assets[0].id)
+    Doc.images.push({ ...Doc.images[0], id: 'image-2', asset: Imported.assets[1].id })
+    await Store.SaveProject(Path, Doc)
+    const Stored = Parse(ReadFileSync(Path, 'utf8'))
+    const Configs = Stored.images.map((Item: { asset: string }) => Join(Root, Item.asset.replace('.png', '.config')))
+    const Unchanged = [Path, Configs[1], ...Stored.images.map((Item: { asset: string }) => Join(Root, Item.asset))]
+    const Before = Unchanged.map((File) => ({ bytes: ReadFileSync(File), time: StatSync(File).mtimeMs }))
+    Doc.images[0].x = 999; Doc.images[0].width = 260
+    await Store.SaveProject(Path, Doc)
+    Expect(Parse(ReadFileSync(Configs[0], 'utf8')).instances['image-1']).toEqual({ x: 999, y: 20, width: 260, height: 90 })
+    Expect(Unchanged.map((File) => ({ bytes: ReadFileSync(File), time: StatSync(File).mtimeMs }))).toEqual(Before)
+    Expect((await new ImageStore().LoadProject(Path)).document).toEqual(Doc)
+  })
+
+  It.each([false, true])('preserves independent edits across tabs, including shared texture instances: %s', async (Shared) => {
+    const Root = Temp(), Initial = new ImageStore(), Path = Join(Root, 'Team.hbr')
+    const Imported = await Initial.ImportBuffers(CollisionPngs.map((Bytes, Index) => ({ name: `${Index}.png`, bytes: Bytes })))
+    const Doc = Board(Imported.assets[0].id)
+    Doc.images.push({ ...Doc.images[0], id: 'image-2', asset: Imported.assets[Shared ? 0 : 1].id })
+    await Initial.SaveProject(Path, Doc)
+    const First = new ImageStore(), Second = new ImageStore()
+    const A = await First.LoadProject(Path), B = await Second.LoadProject(Path)
+    A.document.images[0].x = 100
+    B.document.images[1].y = 200
+    await Promise.all([First.SaveProject(Path, A.document), Second.SaveProject(Path, B.document)])
+    const Result = await new ImageStore().LoadProject(Path)
+    Expect(Result.document.images[0].x).toBe(100)
+    Expect(Result.document.images[1].y).toBe(200)
+    // A stale tab can keep saving untouched instances, but must not replace
+    // another person's change when it later edits that same instance.
+    const Before = ReadFileSync(Path, 'utf8')
+    B.document.images[0].x = 300
+    await Expect(Second.SaveProject(Path, B.document)).rejects.toThrow('外部修改')
+    Expect(ReadFileSync(Path, 'utf8')).toBe(Before)
+    Expect((await new ImageStore().LoadProject(Path)).document.images[0].x).toBe(100)
+  })
+
+  It('loads manual config edits and rejects stale writes without replacing them', async () => {
+    const Root = Temp(), Store = new ImageStore(), Path = Join(Root, 'Agent.hbr')
+    const Imported = await Store.ImportBuffers([{ name: 'image.jpg', bytes: await Jpeg() }])
+    const Doc = Board(Imported.assets[0].id)
+    await Store.SaveProject(Path, Doc)
+    const Config = Join(Root, Parse(ReadFileSync(Path, 'utf8')).images[0].asset.replace('.png', '.config'))
+    const Edited = ReadFileSync(Config, 'utf8').replace('x: 10.125', 'x: 800')
+    WriteFileSync(Config, Edited)
+    await Store.SaveProject(Path, Doc)
+    Expect(ReadFileSync(Config, 'utf8')).toBe(Edited)
+    Doc.images[0].x = 900
+    await Expect(Store.SaveProject(Path, Doc)).rejects.toThrow('外部修改')
+    Expect((await new ImageStore().LoadProject(Path)).document.images[0].x).toBe(800)
+  })
+
+  It('rolls back config updates if publishing the project fails', async () => {
+    const Root = Temp(), Store = new ImageStore(), Path = Join(Root, 'Rollback.hbr')
+    const Imported = await Store.ImportBuffers([{ name: 'image.jpg', bytes: await Jpeg() }])
+    const Doc = Board(Imported.assets[0].id)
+    await Store.SaveProject(Path, Doc)
+    const Before = ReadFileSync(Path, 'utf8')
+    const Config = Join(Root, Parse(Before).images[0].asset.replace('.png', '.config'))
+    const BeforeConfig = ReadFileSync(Config, 'utf8')
+    const Rename = FsPromises.rename
+    const Spy = Vi.spyOn(FsPromises, 'rename').mockImplementation(async (From, To) => {
+      if (To === Path) throw new Error('simulated project publication failure')
+      return Rename(From, To)
+    })
+    SyncBuiltinEsmExports()
+    Doc.images[0].x = 800; Doc.viewport.x = 999
+    await Expect(Store.SaveProject(Path, Doc)).rejects.toThrow('publication failure')
+    Expect(ReadFileSync(Path, 'utf8')).toBe(Before)
+    Expect(ReadFileSync(Config, 'utf8')).toBe(BeforeConfig)
+    Spy.mockRestore()
+    SyncBuiltinEsmExports()
+    await Store.SaveProject(Path, Doc)
+    Expect((await new ImageStore().LoadProject(Path)).document).toEqual(Doc)
+  })
+
+  It('removes one duplicated instance without losing the other layout or PNG', async () => {
+    const Root = Temp(), Store = new ImageStore(), Path = Join(Root, 'Instances.hbr')
+    const Imported = await Store.ImportBuffers([{ name: 'image.jpg', bytes: await Jpeg() }])
+    const Doc = Board(Imported.assets[0].id)
+    Doc.images.push({ ...Doc.images[0], id: 'image-2', x: 600 })
+    const Both = structuredClone(Doc)
+    await Store.SaveProject(Path, Doc)
+    const Asset = Parse(ReadFileSync(Path, 'utf8')).images[0].asset
+    Doc.images.shift()
+    await Store.SaveProject(Path, Doc)
+    Expect(Object.keys(Parse(ReadFileSync(Join(Root, Asset.replace('.png', '.config')), 'utf8')).instances)).toEqual(['image-2'])
+    Expect((await new ImageStore().LoadProject(Path)).document).toEqual(Doc)
+    await Store.SaveProject(Path, Both)
+    Expect((await new ImageStore().LoadProject(Path)).document).toEqual(Both)
+    await Store.SaveProject(Path, Board())
+    await Store.SaveProject(Path, Both)
+    Expect((await new ImageStore().LoadProject(Path)).document).toEqual(Both)
+  })
+
+  It('keeps sibling Save As layouts independent even though both projects use Resource', async () => {
+    const Root = Temp(), Store = new ImageStore(), Original = Join(Root, 'Original.hbr'), Copy = Join(Root, 'Copy.hbr')
+    const Imported = await Store.ImportBuffers([{ name: 'image.jpg', bytes: await Jpeg() }])
+    const Doc = Board(Imported.assets[0].id)
+    await Store.SaveProject(Original, Doc)
+    const Asset = Parse(ReadFileSync(Original, 'utf8')).images[0].asset
+    Doc.images[0].x = 400
+    await Store.SaveProject(Copy, Doc)
+    Expect(Parse(ReadFileSync(Copy, 'utf8')).images[0].asset).not.toBe(Asset)
+    Expect((await new ImageStore().LoadProject(Original)).document.images[0].x).toBe(10.125)
+    Expect((await new ImageStore().LoadProject(Copy)).document.images[0].x).toBe(400)
+  })
+
+  It('prunes orphan texture configs while protecting shared configs and unrelated file types', async () => {
+    const Root = Temp(), Store = new ImageStore(), Path = Join(Root, 'Shared.hbr')
+    const Imported = await Store.ImportBuffers([{ name: 'image.jpg', bytes: await Jpeg() }])
+    await Store.SaveProject(Path, Board(Imported.assets[0].id))
+    const Asset = Parse(ReadFileSync(Path, 'utf8')).images[0].asset
+    const Config = Join(Root, Asset.replace('.png', '.config'))
+    CpSync(Path, Join(Root, 'Other.hbr'))
+    WriteFileSync(Join(Root, 'Resource/Notes.config'), 'keep')
+    await Store.SaveProject(Path, Board())
+    Expect(ExistsSync(Config)).toBe(true)
+    RmSync(Join(Root, 'Other.hbr'))
+    Expect((await Store.CleanupProject(Path, Board())).removedFiles).toBe(2)
+    Expect(ExistsSync(Config)).toBe(false)
+    Expect(ReadFileSync(Join(Root, 'Resource/Notes.config'), 'utf8')).toBe('keep')
+  })
+
+  It.each(['missing', 'invalid', 'no-instance', 'junction'])('rejects %s configs without changing the project or cached board', async (Case) => {
+    const Root = Temp(), Store = new ImageStore(), Path = Join(Root, 'Config.hbr')
+    const Imported = await Store.ImportBuffers([{ name: 'image.jpg', bytes: await Jpeg() }])
+    const Doc = Board(Imported.assets[0].id)
+    await Store.SaveProject(Path, Doc)
+    const Before = ReadFileSync(Path, 'utf8')
+    const Config = Join(Root, Parse(Before).images[0].asset.replace('.png', '.config'))
+    if (Case === 'missing') RmSync(Config)
+    if (Case === 'invalid') WriteFileSync(Config, 'format: invalid')
+    if (Case === 'no-instance') WriteFileSync(Config, 'format: hybridref-texture\nformatVersion: 1\ninstances: {}\n')
+    if (Case === 'junction') { RmSync(Config); SymlinkSync(Temp(), Config, process.platform === 'win32' ? 'junction' : 'dir') }
+    await Expect(Store.LoadProject(Path)).rejects.toThrow('图片配置')
+    Expect(ReadFileSync(Path, 'utf8')).toBe(Before)
+    // A failed load retains the original in-memory assets for recovery elsewhere.
+    await Store.SaveProject(Join(Temp(), 'Recovery.hbr'), Doc)
+  })
+
   It('saves connector geometry, styles and bindings through reopen, Save As and orphan cleanup', async () => {
     const Root = Temp(), Store = new ImageStore(), Project = Join(Root, 'Arrows.hbr')
     const Document = TextBoard('箭头目标')
@@ -57,8 +204,12 @@ Describe('HybridRef image and text storage', () => {
     Document.arrows = [Arrow]
     await Store.SaveProject(Project, Document)
     const Bytes = ReadFileSync(Project, 'utf8')
-    Expect(Parse(Bytes).formatVersion).toBe(4)
-    Expect(Parse(Bytes).arrows).toEqual([Arrow])
+    Expect(Parse(Bytes).formatVersion).toBe(6)
+    const Reference = Parse(Bytes).arrows[0]
+    Expect(Object.keys(Reference)).toEqual(['id', 'asset'])
+    Expect(Reference.asset).toMatch(/^Resource\/Line_[A-F0-9]{16}_[A-F0-9]{8}\.yaml$/)
+    Expect(Parse(ReadFileSync(Join(Root, Reference.asset), 'utf8'))).toEqual({ format: 'hybridref-line', formatVersion: 1, arrow: Arrow.arrow })
+    Expect(Parse(ReadFileSync(Join(Root, Reference.asset.replace('.yaml', '.config')), 'utf8')).instances[Arrow.id]).toEqual({ x: Arrow.x, y: Arrow.y, width: Arrow.width, height: Arrow.height })
     const Loaded = await Store.LoadProject(Project)
     Expect(Loaded.document.arrows).toEqual([Arrow])
     await Store.SaveProject(Project, Loaded.document)
@@ -100,18 +251,18 @@ Describe('HybridRef image and text storage', () => {
     const Root = Temp(), Store = new ImageStore(), Project = Join(Root, 'Markdown.hbr')
     const Png = await Sharp(await Jpeg()).png().toBuffer()
     const Texture = TextureName(Hash(Png))
-    MkdirSync(Join(Root, 'MarkdownResource'))
-    WriteFileSync(Join(Root, 'MarkdownResource', Texture), Png)
-    WriteFileSync(Join(Root, 'MarkdownResource/Unused.png'), Png)
-    const Source = `![图片](MarkdownResource/${Texture})`
+    MkdirSync(Join(Root, 'Resource'))
+    WriteFileSync(Join(Root, 'Resource', Texture), Png)
+    WriteFileSync(Join(Root, 'Resource/Unused.png'), Png)
+    const Source = `![图片](Resource/${Texture})`
     const Document = TextBoard(Source)
     await Store.SaveProject(Project, Document)
-    Expect(ExistsSync(Join(Root, 'MarkdownResource', Texture))).toBe(true)
-    Expect(ExistsSync(Join(Root, 'MarkdownResource/Unused.png'))).toBe(false)
+    Expect(ExistsSync(Join(Root, 'Resource', Texture))).toBe(true)
+    Expect(ExistsSync(Join(Root, 'Resource/Unused.png'))).toBe(false)
     const Stored = Parse(ReadFileSync(Project, 'utf8'))
     WriteFileSync(Join(Root, 'Shared.hbr'), Stringify(Stored))
     await Store.CleanupProject(Project, Board())
-    Expect(ExistsSync(Join(Root, 'MarkdownResource', Texture))).toBe(true)
+    Expect(ExistsSync(Join(Root, 'Resource', Texture))).toBe(true)
     Expect(Parse(ReadFileSync(Join(Root, Stored.texts[0].asset), 'utf8')).content).toBe(Source)
   })
 
@@ -128,7 +279,7 @@ Describe('HybridRef image and text storage', () => {
     const Before = ReadFileSync(Path, 'utf8')
     const Stored = Parse(Before)
     Expect(Object.keys(Stored.texts[0])).toEqual(['id', 'asset', 'x', 'y', 'width', 'height'])
-    Expect(Stored.texts[0].asset).toMatch(/^文字 #%25Resource\/Text_[A-F0-9]{16}_[A-F0-9]{8}\.yaml$/)
+    Expect(Stored.texts[0].asset).toMatch(/^Resource\/Text_[A-F0-9]{16}_[A-F0-9]{8}\.yaml$/)
     const Resource = ReadFileSync(Join(Root, Stored.texts[0].asset))
     Expect(Parse(Resource.toString('utf8'))).toEqual(Document.texts[0].text)
     Expect(Stored.texts[0].asset).toContain(Hash(Resource).slice(0, 8).toUpperCase())
@@ -140,7 +291,7 @@ Describe('HybridRef image and text storage', () => {
     await Reopened.SaveProject(Path, Loaded.document)
     Expect(ReadFileSync(Path, 'utf8')).toBe(Before)
     Expect(ReadFileSync(Join(Root, Stored.texts[0].asset))).toEqual(Resource)
-    Expect(ReaddirSync(Join(Root, '文字 #%25Resource'))).toEqual([Basename(Stored.texts[0].asset)])
+    Expect(ReaddirSync(Join(Root, 'Resource'))).toEqual([Basename(Stored.texts[0].asset)])
   })
 
   It('roundtrips a mixed board and saves it elsewhere entirely from memory', async () => {
@@ -150,13 +301,13 @@ Describe('HybridRef image and text storage', () => {
     const Document = { ...Board(Imported.assets[0].id), texts: TextBoard().texts }
     const Path = Join(Root, 'Mixed.hbr')
     await Store.SaveProject(Path, Document)
-    Expect(ReaddirSync(Join(Root, 'MixedResource'))).toHaveLength(2)
+    Expect(ReaddirSync(Join(Root, 'Resource'))).toHaveLength(3)
     const Reopened = new ImageStore()
     const Loaded = await Reopened.LoadProject(Path)
     Expect(Loaded.document).toEqual(Document)
     Expect(Loaded.assets).toEqual(Imported.assets)
     // Simulate removable source storage disappearing after open.
-    for (const Name of ReaddirSync(Join(Root, 'MixedResource'))) RmSync(Join(Root, 'MixedResource', Name))
+    for (const Name of ReaddirSync(Join(Root, 'Resource'))) RmSync(Join(Root, 'Resource', Name))
     const SavedAs = Join(Temp(), '另存.hbr')
     await Reopened.SaveProject(SavedAs, Loaded.document)
     Expect((await new ImageStore().LoadProject(SavedAs)).document).toEqual(Document)
@@ -180,7 +331,7 @@ Describe('HybridRef image and text storage', () => {
     Expect(Basename(Second.texts[0].asset).split('_')[1]).toBe(Basename(First.texts[0].asset).split('_')[1])
     Expect(Basename(Second.texts[1].asset).split('_')[1]).not.toBe(Basename(First.texts[0].asset).split('_')[1])
     Expect(ExistsSync(Join(Root, First.texts[0].asset))).toBe(false)
-    Expect(ReaddirSync(Join(Root, 'VersionsResource'))).toHaveLength(2)
+    Expect(ReaddirSync(Join(Root, 'Resource'))).toHaveLength(2)
     Expect((await new ImageStore().LoadProject(Path)).document).toEqual(Document)
   })
 
@@ -192,6 +343,7 @@ Describe('HybridRef image and text storage', () => {
     await Store.SaveProject(Path, Board(Imported.assets[0].id))
     const Stored = Parse(ReadFileSync(Path, 'utf8'))
     Stored.formatVersion = 2
+    Object.assign(Stored.images[0], { x: 10.125, y: 20, width: 130, height: 90 })
     delete Stored.texts
     const Version2 = Stringify(Stored)
     WriteFileSync(Path, Version2)
@@ -200,7 +352,7 @@ Describe('HybridRef image and text storage', () => {
     Expect(Loaded.document).toEqual(Board(Imported.assets[0].id))
     Expect(ReadFileSync(Path, 'utf8')).toBe(Version2)
     await Reopened.SaveProject(Path, Loaded.document)
-    Expect(Parse(ReadFileSync(Path, 'utf8'))).toMatchObject({ formatVersion: 3, texts: [] })
+    Expect(Parse(ReadFileSync(Path, 'utf8'))).toMatchObject({ formatVersion: 6, texts: [] })
   })
 
   It('protects an existing project and immutable text target from conflicting content', async () => {
@@ -238,8 +390,10 @@ Describe('HybridRef image and text storage', () => {
     WriteFileSync(Path, Stringify(Stored))
     WriteFileSync(Join(Outside, Filename), Text)
     SymlinkSync(Outside, Join(Root, 'BrokenTextResource'), process.platform === 'win32' ? 'junction' : 'dir')
+    SymlinkSync(Outside, Join(Root, 'Resource'), process.platform === 'win32' ? 'junction' : 'dir')
     await Expect(Store.LoadProject(Path)).rejects.toThrow('越过画板目录')
     await Expect(Store.SaveProject(Path, TextBoard())).rejects.toThrow('越过画板目录')
+    RmSync(Join(Root, 'Resource'))
     const Malformed = Buffer.from('format: hybridref-text\nformatVersion: 1\ncontent: []\n')
     Stored.texts[0].asset = TextName(Malformed)
     WriteFileSync(Join(Root, Stored.texts[0].asset), Malformed)
@@ -288,8 +442,8 @@ Describe('HybridRef image and text storage', () => {
     const Store = new ImageStore()
     await Store.SaveProject(Path, Board())
     const Before = ReadFileSync(Path, 'utf8')
-    Expect(ReaddirSync(Join(Root, 'Empty')).sort()).toEqual(['Empty.hbr', 'EmptyResource'])
-    Expect(ReaddirSync(Join(Root, 'Empty', 'EmptyResource'))).toEqual([])
+    Expect(ReaddirSync(Join(Root, 'Empty')).sort()).toEqual(['Empty.hbr', 'Resource'])
+    Expect(ReaddirSync(Join(Root, 'Empty', 'Resource'))).toEqual([])
     Expect((await new ImageStore().LoadProject(Path)).document).toEqual(Board())
     await Store.SaveProject(Path, Board())
     Expect(ReadFileSync(Path, 'utf8')).toBe(Before)
@@ -354,16 +508,16 @@ Describe('HybridRef image and text storage', () => {
     await Store.SaveProject(Path, Doc)
     const Original = ReadFileSync(Path, 'utf8')
     Expect(Parse(Original).images.map((ImageValue: { asset: string }) => ImageValue.asset)).toEqual([
-      `StableNameResource/${Filename}`, `StableNameResource/${Filename}`,
+      `Resource/${Filename}`, `Resource/${Filename}`,
     ])
-    Expect(ReaddirSync(Join(Root, 'StableNameResource'))).toEqual([Filename])
+    Expect(ReaddirSync(Join(Root, 'Resource'))).toEqual([Filename.replace('.png', '.config'), Filename])
     const Reopened = new ImageStore()
     const Loaded = await Reopened.LoadProject(Path)
     Now += 5000
     Expect((await Reopened.ImportBuffers([{ name: 'third.jpg', bytes: Photo }])).assets[0].id).toBe(Id)
     await Reopened.SaveProject(Path, Loaded.document)
     Expect(ReadFileSync(Path, 'utf8')).toBe(Original)
-    Expect(ReaddirSync(Join(Root, 'StableNameResource'))).toEqual([Filename])
+    Expect(ReaddirSync(Join(Root, 'Resource'))).toEqual([Filename.replace('.png', '.config'), Filename])
   })
 
   It('resolves real short-hash collisions in the same millisecond without merging or overwriting images', async () => {
@@ -380,8 +534,8 @@ Describe('HybridRef image and text storage', () => {
     Doc.images.push({ ...Doc.images[0], id: 'image-2', asset: Imported.assets[1].id })
     await Store.SaveProject(Path, Doc)
     const Names = [TextureName('d9d0f99f', 1700000000000), TextureName('d9d0f99f', 1700000000001)]
-    Expect(ReaddirSync(Join(Root, 'CollisionResource')).sort()).toEqual([...Names].sort())
-    for (const [Index, Name] of Names.entries()) Expect(ReadFileSync(Join(Root, 'CollisionResource', Name))).toEqual(CollisionPngs[Index])
+    Expect(ReaddirSync(Join(Root, 'Resource')).sort()).toEqual([...Names, ...Names.map((Name) => Name.replace('.png', '.config'))].sort())
+    for (const [Index, Name] of Names.entries()) Expect(ReadFileSync(Join(Root, 'Resource', Name))).toEqual(CollisionPngs[Index])
     const Reopened = new ImageStore()
     const Loaded = await Reopened.LoadProject(Path)
     Expect(Loaded.document).toEqual(Doc)
@@ -451,13 +605,13 @@ Describe('HybridRef image and text storage', () => {
     const Path = Join(Root, '参考 #% 测试.hbr')
     await Store.SaveProject(Path, Doc)
     const Raw = ReadFileSync(Path, 'utf8')
-    Expect(Raw).toContain('formatVersion: 3')
+    Expect(Raw).toContain('formatVersion: 6')
     Expect(Raw).not.toMatch(/createdAt|updatedAt|boards:|recordings:|data:image/)
     const Filename = Basename(Parse(Raw).images[0].asset)
     Expect(Filename).toMatch(/^Texture_[A-F0-9]{16}_[A-F0-9]{8}\.png$/)
     Expect(Filename.endsWith(`_${Asset.slice(0, 8).toUpperCase()}.png`)).toBe(true)
-    Expect(Parse(Raw).images.map((ImageValue: { asset: string }) => ImageValue.asset)).toEqual([`参考 #% 测试Resource/${Filename}`, `参考 #% 测试Resource/${Filename}`])
-    Expect(ReaddirSync(Join(Root, '参考 #% 测试Resource'))).toEqual([Filename])
+    Expect(Parse(Raw).images.map((ImageValue: { asset: string }) => ImageValue.asset)).toEqual([`Resource/${Filename}`, `Resource/${Filename}`])
+    Expect(ReaddirSync(Join(Root, 'Resource'))).toEqual([Filename.replace('.png', '.config'), Filename])
     const Loaded = await new ImageStore().LoadProject(Path)
     Expect(Loaded.document).toEqual(Doc)
     Expect(Loaded.assets).toEqual(Imported.assets)
@@ -473,10 +627,12 @@ Describe('HybridRef image and text storage', () => {
     Doc.viewport.zoom = 0.12345678
     await Store.SaveProject(Path, Doc)
     const First = ReadFileSync(Path, 'utf8')
-    Expect(Parse(First).images[0].x).toBe(1.2346)
+    const Config = Join(Root, Parse(First).images[0].asset.replace('.png', '.config'))
+    const FirstConfig = ReadFileSync(Config, 'utf8')
+    Expect(Parse(FirstConfig).instances['image-1'].x).toBe(1.2346)
     Expect(Parse(First).viewport.zoom).toBe(0.1235)
     Expect(Object.keys(Parse(First))).toEqual(['format', 'formatVersion', 'viewport', 'images', 'texts'])
-    Expect(Object.keys(Parse(First).images[0])).toEqual(['id', 'asset', 'x', 'y', 'width', 'height'])
+    Expect(Object.keys(Parse(First).images[0])).toEqual(['id', 'asset'])
     await Store.SaveProject(Path, Doc)
     Expect(ReadFileSync(Path, 'utf8')).toBe(First)
     const Reopened = new ImageStore()
@@ -485,7 +641,8 @@ Describe('HybridRef image and text storage', () => {
     Expect(ReadFileSync(Path, 'utf8')).toBe(First)
     Loaded.document.images[0].x = 25
     await Reopened.SaveProject(Path, Loaded.document)
-    Expect(ReadFileSync(Path, 'utf8')).toBe(First.replace('x: 1.2346', 'x: 25'))
+    Expect(ReadFileSync(Path, 'utf8')).toBe(First)
+    Expect(ReadFileSync(Config, 'utf8')).toBe(FirstConfig.replace('x: 1.2346', 'x: 25'))
   })
 
   It('supports moving the project folder and Save As entirely from loaded memory', async () => {
@@ -497,12 +654,12 @@ Describe('HybridRef image and text storage', () => {
     const Filename = Basename(Parse(ReadFileSync(Original, 'utf8')).images[0].asset)
     const Moved = Temp()
     CpSync(Original, Join(Moved, 'Original.hbr'))
-    CpSync(Join(Root, 'OriginalResource'), Join(Moved, 'OriginalResource'), { recursive: true })
+    CpSync(Join(Root, 'Resource'), Join(Moved, 'Resource'), { recursive: true })
     const LoadedStore = new ImageStore()
     const Loaded = await LoadedStore.LoadProject(Join(Moved, 'Original.hbr'))
     const SavedAs = Join(Temp(), '另存.hbr')
     await LoadedStore.SaveProject(SavedAs, Loaded.document)
-    Expect(Parse(ReadFileSync(SavedAs, 'utf8')).images[0].asset).toBe(`另存Resource/${Filename}`)
+    Expect(Parse(ReadFileSync(SavedAs, 'utf8')).images[0].asset).toBe(`Resource/${Filename}`)
     Expect((await new ImageStore().LoadProject(SavedAs)).assets).toEqual(Imported.assets)
   })
 
@@ -571,6 +728,7 @@ Describe('HybridRef image and text storage', () => {
     const Filename = TextureName(Id)
     WriteFileSync(Join(Outside, Filename), Bytes(Imported.assets[0].dataUrl))
     SymlinkSync(Outside, Join(Root, 'EscapeResource'), process.platform === 'win32' ? 'junction' : 'dir')
+    SymlinkSync(Outside, Join(Root, 'Resource'), process.platform === 'win32' ? 'junction' : 'dir')
     const Doc = Board(Id)
     Doc.images[0].asset = `EscapeResource/${Filename}`
     const Path = Join(Root, 'Escape.hbr')
@@ -649,13 +807,13 @@ Describe('HybridRef image and text storage', () => {
     Expect(Cleaned.missingResources).toEqual(Loaded.missingResources)
     Expect(Parse(ReadFileSync(Path, 'utf8')).images).toEqual(Stored.images)
     Expect(Parse(ReadFileSync(Path, 'utf8')).texts).toEqual(Stored.texts)
-    Expect(ReaddirSync(Join(Root, 'MissingResource'))).toEqual([])
+    Expect(ReaddirSync(Join(Root, 'Resource'))).toEqual([Basename(Stored.images[0].asset).replace('.png', '.config')])
   })
 
   It('restores cached resources deleted after opening while pruning only orphan files and preserving new edits', async () => {
     const Root = Temp()
     const Path = Join(Root, 'Clean.hbr')
-    const ResourceDir = Join(Root, 'CleanResource')
+    const ResourceDir = Join(Root, 'Resource')
     const Store = new ImageStore()
     const Imported = await Store.ImportBuffers([{ name: 'image.jpg', bytes: await Jpeg() }])
     const Document = { ...Board(Imported.assets[0].id), texts: TextBoard().texts }
@@ -810,9 +968,9 @@ Describe('HybridRef image and text storage', () => {
     await Reopened.SaveProject(SavedAs, Loaded.document)
     const First = ReadFileSync(SavedAs, 'utf8')
     const Saved = Parse(First)
-    Expect(Saved.texts).toEqual([{ ...Stored.texts[0], asset: `CopyResource/${Basename(Stored.texts[0].asset)}` }])
-    Expect(Saved.images).toEqual([{ ...Stored.images[0], asset: `CopyResource/${Basename(Stored.images[0].asset)}` }])
-    Expect(ReaddirSync(Join(Destination, 'CopyResource'))).toEqual([])
+    Expect(Saved.texts).toEqual([{ ...Stored.texts[0], asset: `Resource/${Basename(Stored.texts[0].asset)}` }])
+    Expect(Saved.images).toEqual([{ ...Stored.images[0], asset: `Resource/${Basename(Stored.images[0].asset)}` }])
+    Expect(ReaddirSync(Join(Destination, 'Resource'))).toEqual([Basename(Saved.images[0].asset).replace('.png', '.config')])
     await Reopened.SaveProject(SavedAs, Loaded.document)
     Expect(ReadFileSync(SavedAs, 'utf8')).toBe(First)
     const Reloaded = await new ImageStore().LoadProject(SavedAs)
@@ -849,7 +1007,7 @@ Describe('HybridRef image and text storage', () => {
     const Store = new ImageStore()
     const Document = TextBoard()
     await Store.SaveProject(Path, Document)
-    const ResourceDir = Join(Root, 'GuardResource')
+    const ResourceDir = Join(Root, 'Resource')
     WriteFileSync(Join(ResourceDir, 'orphan.png'), CollisionPngs[0])
     WriteFileSync(Join(Outside, 'keep.png'), CollisionPngs[1])
     SymlinkSync(Outside, Join(ResourceDir, 'Linked.png'), process.platform === 'win32' ? 'junction' : 'dir')
@@ -876,7 +1034,7 @@ Describe('HybridRef image and text storage', () => {
     const Second = new ImageStore()
     const Last = TextBoard('最后一次保存')
     await Promise.all([First.SaveProject(Path, TextBoard('第一次保存')), Second.SaveProject(Path, Last)])
-    Expect(ReaddirSync(Join(Root, 'TabsResource'))).toHaveLength(1)
+    Expect(ReaddirSync(Join(Root, 'Resource'))).toHaveLength(1)
     Expect((await new ImageStore().LoadProject(Path)).document).toEqual(Last)
   })
 })

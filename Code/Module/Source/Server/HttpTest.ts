@@ -96,7 +96,7 @@ Describe('local browser HTTP server', () => {
     Expect((await Call('/api/new', { name: 'TextProject', document: Document })).status).toBe(200)
     const Stored = Parse(ReadFileSync(Path, 'utf8'))
     Expect(Stored.texts[0]).not.toHaveProperty('text')
-    Expect(Stored.texts[0].asset).toMatch(/^TextProjectResource\/Text_[A-F0-9]{16}_[A-F0-9]{8}\.yaml$/)
+    Expect(Stored.texts[0].asset).toMatch(/^Resource\/Text_[A-F0-9]{16}_[A-F0-9]{8}\.yaml$/)
     Expect(Parse(ReadFileSync(Join(ProjectDirectory, 'TextProject', Stored.texts[0].asset), 'utf8'))).toEqual(Document.texts[0].text)
     const OtherTab = RandomUUID()
     const Opened = await Call('/api/open', { path: Path }, { session: OtherTab })
@@ -107,7 +107,7 @@ Describe('local browser HTTP server', () => {
     Document.texts[0].text.background.opacity = 0.25
     Expect((await Call('/api/save', { path: Path, document: Document }, { session: OtherTab })).status).toBe(200)
     Expect(ExistsSync(Join(ProjectDirectory, 'TextProject', Stored.texts[0].asset))).toBe(false)
-    Expect(ReaddirSync(Join(ProjectDirectory, 'TextProject', 'TextProjectResource'))).toHaveLength(1)
+    Expect(ReaddirSync(Join(ProjectDirectory, 'TextProject', 'Resource'))).toHaveLength(1)
     Expect((await Call('/api/open', { path: Path })).body.document).toEqual(Document)
     Document.texts[0].text.font.opacity = 2
     const Invalid = await Call('/api/save', { path: Path, document: Document })
@@ -147,7 +147,7 @@ Describe('local browser HTTP server', () => {
     Expect((await Call('/api/new', { name: 'Cleanup', document: Document })).status).toBe(200)
     const Directory = Join(ProjectDirectory, 'Cleanup')
     const Path = Join(Directory, 'Cleanup.hbr')
-    const ResourceDirectory = Join(Directory, 'CleanupResource')
+    const ResourceDirectory = Join(Directory, 'Resource')
     const Stored = Parse(ReadFileSync(Path, 'utf8'))
     const MissingImageBytes = ReadFileSync(Join(Directory, Stored.images[0].asset))
     const MissingTextBytes = ReadFileSync(Join(Directory, Stored.texts[1].asset))
@@ -195,7 +195,7 @@ Describe('local browser HTTP server', () => {
     Expect(Saved.images).toEqual(Stored.images)
     Expect(Saved.texts).toHaveLength(2)
     Expect(Saved.texts.find((Item: { id: string }) => Item.id === 'missing-text')).toEqual(Stored.texts[1])
-    Expect(ReaddirSync(ResourceDirectory)).toEqual([Saved.texts[0].asset.split('/').pop()])
+    Expect(ReaddirSync(ResourceDirectory).sort()).toEqual([Saved.texts[0].asset.split('/').pop(), Saved.images[0].asset.split('/').pop().replace('.png', '.config')].sort())
     Expect(Parse(ReadFileSync(Join(Directory, Saved.texts[0].asset), 'utf8')).content).toBe('清理时保存的修改')
     const Repeated = await Call('/api/cleanup', { path: Path, document: Cleaned.body.document }, { session: OtherTab })
     Expect(Repeated.status).toBe(200)
@@ -294,8 +294,8 @@ Describe('local browser HTTP server', () => {
     const Created = await Call('/api/new', { name: Name })
     Expect(Created.status).toBe(200)
     Expect(Created.body).toEqual({ path: Path })
-    Expect(ReaddirSync(Directory).sort()).toEqual([`${Name}.hbr`, `${Name}Resource`].sort())
-    Expect(ReaddirSync(Join(Directory, `${Name}Resource`))).toEqual([])
+    Expect(ReaddirSync(Directory).sort()).toEqual([`${Name}.hbr`, `Resource`].sort())
+    Expect(ReaddirSync(Join(Directory, `Resource`))).toEqual([])
     const Opened = await Call('/api/open', { path: Path }, { session: RandomUUID() })
     Expect(Opened.body.document).toEqual(EmptyDocument())
     Expect(Opened.body.assets).toEqual([])
@@ -313,9 +313,9 @@ Describe('local browser HTTP server', () => {
     Expect(Created.status).toBe(200)
     Expect(Created.body).toEqual({ path: Path })
     const Saved = Parse(ReadFileSync(Path, 'utf8')) as BoardDocument
-    Expect(Saved.images[0].asset).toMatch(/^FirstResource\/Texture_[0-9A-F]{16}_[0-9A-F]{8}\.png$/)
+    Expect(Saved.images[0].asset).toMatch(/^Resource\/Texture_[0-9A-F]{16}_[0-9A-F]{8}\.png$/)
     Expect(ExistsSync(Join(ProjectDirectory, 'First', Saved.images[0].asset))).toBe(true)
-    Expect(ReaddirSync(Join(ProjectDirectory, 'First', 'FirstResource'))).toHaveLength(1)
+    Expect(ReaddirSync(Join(ProjectDirectory, 'First', 'Resource'))).toHaveLength(2)
     const Loaded = await Call('/api/open', { path: Path }, { session: RandomUUID() })
     Expect(Loaded.body.document).toEqual(Document)
     Expect(Loaded.body.assets).toEqual(Imported.body.assets)
@@ -361,7 +361,8 @@ Describe('local browser HTTP server', () => {
     Expect(ExistsSync(Join(ProjectDirectory, 'Failed'))).toBe(false)
     Document.images[0].x = 42
     Expect((await Call('/api/save', { path: Current, document: Document })).status).toBe(200)
-    Expect(ReadFileSync(Current, 'utf8')).toContain('x: 42')
+    const Saved = Parse(ReadFileSync(Current, 'utf8'))
+    Expect(ReadFileSync(Join(ProjectDirectory, 'Current', Saved.images[0].asset.replace('.png', '.config')), 'utf8')).toContain('x: 42')
   })
 
   It('leaves any files written before a project-creation failure intact', async () => {
@@ -386,7 +387,7 @@ Describe('local browser HTTP server', () => {
     Expect(Results.find((Result) => Result.status === 409)?.body.code).toBe('EXISTS')
     const Winner = Results[0].status === 200 ? 11 : 22
     Expect(ReadFileSync(Join(ProjectDirectory, 'Race', 'Race.hbr'), 'utf8')).toContain(`x: ${Winner}`)
-    Expect(ReaddirSync(Join(ProjectDirectory, 'Race')).sort()).toEqual(['Race.hbr', 'RaceResource'])
+    Expect(ReaddirSync(Join(ProjectDirectory, 'Race')).sort()).toEqual(['Race.hbr', 'Resource'])
   })
 
   It('rejects cross-origin, rebinding Host, wrong ports, browser preflights and cross-site fetches', async () => {
@@ -463,6 +464,8 @@ Describe('local browser HTTP server', () => {
     MkdirSync(Join(ProjectDirectory, 'LooseResource'))
     WriteFileSync(Join(ProjectDirectory, 'LooseResource', 'Hidden.hbr'), '')
     WriteFileSync(Join(ProjectDirectory, 'Loose.hbr'), '')
+    MkdirSync(Join(ProjectDirectory, 'Resource'))
+    WriteFileSync(Join(ProjectDirectory, 'Resource', 'Hidden.hbr'), '')
     MkdirSync(Join(ProjectDirectory, 'MyResource'))
     WriteFileSync(Join(ProjectDirectory, 'MyResource', 'MyResource.hbr'), '')
     WriteFileSync(Join(Root, 'Private.hbr'), '')

@@ -117,6 +117,15 @@ async function ReadImageLayout(Page: Page): Promise<ImageLayout[]> {
   })))
 }
 
+async function ReadSavedArrows(Project: string): Promise<BoardArrow[]> {
+  const Stored = Parse(await ReadFile(Project, 'utf8'))
+  return Promise.all((Stored.arrows ?? []).map(async (Item: { id: string; asset: string }): Promise<BoardArrow> => {
+    const Resource = Parse(await ReadFile(Join(Dirname(Project), Item.asset), 'utf8'))
+    const Config = Parse(await ReadFile(Join(Dirname(Project), Item.asset.replace('.yaml', '.config')), 'utf8'))
+    return { id: Item.id, ...Config.instances[Item.id], arrow: Resource.arrow }
+  }))
+}
+
 interface CapturedClipboard { png: string; types: readonly string[]; inGesture: boolean; calls: number }
 interface ClipboardTestWindow { CapturedClipboard: CapturedClipboard; RejectClipboard: boolean }
 
@@ -432,12 +441,14 @@ Test('clipboard images save as deterministic YAML and PNG, then reopen after swi
   const Doc = Parse(Saved)
   Expect(Doc.images).toHaveLength(5)
   for (const Image of Doc.images) {
-    Expect(Image.asset).toMatch(/^BrowserRefResource\/Texture_[A-F0-9]{16}_[A-F0-9]{8}\.png$/)
+    Expect(Image.asset).toMatch(/^Resource\/Texture_[A-F0-9]{16}_[A-F0-9]{8}\.png$/)
     Expect((await ReadFile(Join(Dirname(Project), Image.asset))).subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a')
   }
   const BeforeSave = (await Stat(Project)).mtimeMs
+  const SaveResponse = Page.waitForResponse(Response => Response.url().endsWith('/api/save') && Response.request().method() === 'POST')
   await Page.keyboard.press('Control+s')
-  await Expect.poll(async () => (await Stat(Project)).mtimeMs).toBeGreaterThan(BeforeSave)
+  Expect((await SaveResponse).ok()).toBe(true)
+  Expect((await Stat(Project)).mtimeMs).toBe(BeforeSave)
   Expect(await ReadFile(Project, 'utf8')).toBe(Saved)
   await StartNewProject(Page)
   await ChooseProjectName(Page, 'NextBoard')
@@ -446,6 +457,40 @@ Test('clipboard images save as deterministic YAML and PNG, then reopen after swi
   await Expect(Images).toHaveCount(5)
   await Page.reload()
   await Expect(Images).toHaveCount(5)
+})
+
+Test('image movement updates only its config and reopening reads agent-edited geometry', async ({ page: Page }) => {
+  await OpenImportedBoard(Page)
+  await Page.keyboard.press('Control+s')
+  await ChooseProjectName(Page, 'ConfigBoard')
+  await Expect(Page).toHaveTitle('ConfigBoard.hbr — HybridRef')
+  const Project = Join(ProjectDirectory, 'ConfigBoard/ConfigBoard.hbr')
+  const Before = await ReadFile(Project, 'utf8'), Stored = Parse(Before)
+  const Configs: string[] = Stored.images.map((Item: { asset: string }) => Join(Dirname(Project), Item.asset.replace('.png', '.config')))
+  const OtherBefore = await ReadFile(Configs[1], 'utf8')
+  const Images = Page.getByTestId('image-item')
+  const First = (await Images.first().boundingBox())!
+  await Page.keyboard.press('Escape')
+  await Page.mouse.move(First.x + First.width / 2, First.y + First.height / 2)
+  await Page.mouse.down()
+  await Page.mouse.move(First.x + First.width / 2 + 75, First.y + First.height / 2 + 35, { steps: 8 })
+  await Page.mouse.up()
+  const Layout = (await ReadImageLayout(Page))[0]
+  const Saving = Page.waitForResponse(Response => Response.url().endsWith('/api/save') && Response.request().method() === 'POST')
+  await Page.keyboard.press('Control+s')
+  Expect((await Saving).ok()).toBe(true)
+  Expect(await ReadFile(Project, 'utf8')).toBe(Before)
+  Expect(await ReadFile(Configs[1], 'utf8')).toBe(OtherBefore)
+  const Config = Parse(await ReadFile(Configs[0], 'utf8'))
+  const Id = Stored.images[0].id
+  Expect(Config.instances[Id].x).toBeCloseTo(Layout.x, 3)
+  Expect(Config.instances[Id].y).toBeCloseTo(Layout.y, 3)
+  Config.instances[Id].x = 1234
+  Config.instances[Id].width = 456
+  await WriteFile(Configs[0], Stringify(Config))
+  await Page.reload()
+  await Expect(Images).toHaveCount(3)
+  Expect((await ReadImageLayout(Page))[0]).toEqual(Config.instances[Id])
 })
 
 Test('Ctrl+C exports selected images and styled text as an opaque, lossless PNG at board scale', async ({ page: Page }) => {
@@ -662,7 +707,7 @@ Test('new projects use their own folder below Project even after opening an exte
   await Expect(Page.getByTestId('image-item')).toHaveCount(0)
   const Created = await ReadFile(Project, 'utf8')
   Expect(Parse(Created).images).toEqual([])
-  Expect((await Stat(Join(Dirname(Project), `${Name}Resource`))).isDirectory()).toBe(true)
+  Expect((await Stat(Join(Dirname(Project), `Resource`))).isDirectory()).toBe(true)
   await Page.reload()
   await Expect(Page).toHaveTitle(`${Name}.hbr — HybridRef`)
 
@@ -678,7 +723,7 @@ Test('new projects use their own folder below Project even after opening an exte
   await ChoosePath(Page, Copy)
   await Expect(Page).toHaveTitle('Copy.hbr — HybridRef')
   Expect(Parse(await ReadFile(Copy, 'utf8')).images).toEqual([])
-  Expect((await Stat(Join(Folder, 'CopyResource'))).isDirectory()).toBe(true)
+  Expect((await Stat(Join(Folder, 'Resource'))).isDirectory()).toBe(true)
 })
 
 Test('project menu refreshes on open, supports keyboard control and asks about edits only when switching', async ({ page: Page }) => {
@@ -807,7 +852,7 @@ Test('text styles, independent copies, edit history and resource references surv
   const Project = Join(ProjectDirectory, 'TextBoard', 'TextBoard.hbr')
   const Saved = await ReadFile(Project, 'utf8')
   const Doc = Parse(Saved)
-  Expect(Doc.formatVersion).toBe(3)
+  Expect(Doc.formatVersion).toBe(6)
   Expect(Doc.images).toHaveLength(3)
   Expect(Doc.texts).toHaveLength(2)
   Expect(Saved).not.toContain('设计标题')
@@ -815,7 +860,7 @@ Test('text styles, independent copies, edit history and resource references surv
   const Resources = []
   for (const Item of Doc.texts) {
     Expect(Object.keys(Item).sort()).toEqual(['asset', 'height', 'id', 'width', 'x', 'y'])
-    Expect(Item.asset).toMatch(/^TextBoardResource\/Text_[A-F0-9]{16}_[A-F0-9]{8}\.yaml$/)
+    Expect(Item.asset).toMatch(/^Resource\/Text_[A-F0-9]{16}_[A-F0-9]{8}\.yaml$/)
     Resources.push(Parse(await ReadFile(Join(Dirname(Project), Item.asset), 'utf8')))
   }
   Expect(Doc.texts[0].asset).not.toBe(Doc.texts[1].asset)
@@ -840,7 +885,7 @@ Test('text styles, independent copies, edit history and resource references surv
 
 Test('orphan cleanup preserves missing references and inline edits, and restored resources reappear', async ({ page: Page }) => {
   const Directory = Join(ProjectDirectory, 'CleanupBoard')
-  const ResourceDirectory = Join(Directory, 'CleanupBoardResource')
+  const ResourceDirectory = Join(Directory, 'Resource')
   const Path = Join(Directory, 'CleanupBoard.hbr')
   await Mkdir(ResourceDirectory, { recursive: true })
   const Bytes = await Sharp({ create: { width: 200, height: 120, channels: 3, background: '#497988' } }).png().toBuffer()
@@ -859,12 +904,12 @@ Test('orphan cleanup preserves missing references and inline edits, and restored
   await WriteFile(Path, Stringify({
     ...EmptyDocument(), viewport: { x: 90, y: 100, zoom: 1 },
     images: [
-      { id: 'keep-image', asset: `CleanupBoardResource/${ImageName}`, x: 20, y: 60, width: 300, height: 180 },
-      { id: 'missing-image', asset: `CleanupBoardResource/${MissingImageName}`, ...MissingGeometry },
+      { id: 'keep-image', asset: `Resource/${ImageName}`, x: 20, y: 60, width: 300, height: 180 },
+      { id: 'missing-image', asset: `Resource/${MissingImageName}`, ...MissingGeometry },
     ],
     texts: [
-      { id: 'keep-text', asset: `CleanupBoardResource/${TextName}`, x: 20, y: 320, width: 360, height: 160 },
-      { id: 'missing-text', asset: `CleanupBoardResource/${MissingTextName}`, x: 430, y: 320, width: 300, height: 180 },
+      { id: 'keep-text', asset: `Resource/${TextName}`, x: 20, y: 320, width: 360, height: 160 },
+      { id: 'missing-text', asset: `Resource/${MissingTextName}`, x: 430, y: 320, width: 300, height: 180 },
     ],
   }))
   await Page.goto(ServiceUrl)
@@ -893,11 +938,12 @@ Test('orphan cleanup preserves missing references and inline edits, and restored
   Expect(Saved.texts).toHaveLength(2)
   Expect(Saved.images[0].id).toBe('keep-image')
   Expect(Saved.texts[0].id).toBe('keep-text')
-  Expect(Saved.images[1]).toEqual({ id: 'missing-image', asset: `CleanupBoardResource/${MissingImageName}`, ...MissingGeometry })
-  Expect(Saved.texts[1]).toEqual({ id: 'missing-text', asset: `CleanupBoardResource/${MissingTextName}`, x: 430, y: 320, width: 300, height: 180 })
+  Expect(Saved.images[1]).toEqual({ id: 'missing-image', asset: `Resource/${MissingImageName}` })
+  Expect(Parse(await ReadFile(Join(ResourceDirectory, MissingImageName.replace('.png', '.config')), 'utf8')).instances['missing-image']).toEqual(MissingGeometry)
+  Expect(Saved.texts[1]).toEqual({ id: 'missing-text', asset: `Resource/${MissingTextName}`, x: 430, y: 320, width: 300, height: 180 })
   Expect(Parse(await ReadFile(Join(Directory, Saved.texts[0].asset), 'utf8')).content).toBe('清理也保存原位编辑草稿')
   const Referenced = [...Saved.images, ...Saved.texts].map((Item: { asset: string }) => Basename(Item.asset)).sort()
-  Expect((await Readdir(ResourceDirectory)).sort()).toEqual([ImageName, Basename(Saved.texts[0].asset)].sort())
+  Expect((await Readdir(ResourceDirectory)).sort()).toEqual([ImageName, Basename(Saved.texts[0].asset), ImageName.replace('.png', '.config'), MissingImageName.replace('.png', '.config')].sort())
   Expect(Referenced.every(Name => /^(Texture|Text)_[A-F0-9]{16}_[A-F0-9]{8}\.(png|yaml)$/.test(Name))).toBe(true)
   await Page.reload()
   await Expect(Images).toHaveCount(2)
@@ -912,7 +958,7 @@ Test('orphan cleanup preserves missing references and inline edits, and restored
   Expect((await ReadImageLayout(Page))[1]).toEqual(MissingGeometry)
   const Recovered = Parse(await ReadFile(Path, 'utf8'))
   const RecoveredReferences = [...Recovered.images, ...Recovered.texts].map((Item: { asset: string }) => Basename(Item.asset)).sort()
-  Expect((await Readdir(ResourceDirectory)).sort()).toEqual(RecoveredReferences)
+  Expect((await Readdir(ResourceDirectory)).sort()).toEqual([...RecoveredReferences, ...Recovered.images.map((Item: { asset: string }) => Basename(Item.asset).replace('.png', '.config'))].sort())
 })
 
 Test('plain text paste, mixed selection, cut/copy, movement and text frame resizing support undo', async ({ page: Page }) => {
@@ -1158,7 +1204,7 @@ Test('dropping images commits the active text draft before image import and pres
 
 Test('Markdown renders GFM, keeps source editable and saved, and exports the same typography and local image', async ({ page: Page }) => {
   const Folder = Join(ProjectDirectory, 'Markdown')
-  const ResourceFolder = Join(Folder, 'MarkdownResource')
+  const ResourceFolder = Join(Folder, 'Resource')
   await Mkdir(ResourceFolder, { recursive: true })
   const Picture = await Sharp({ create: { width: 280, height: 80, channels: 3, background: '#2493c1' } }).png().toBuffer()
   const PictureHash = CreateHash('sha256').update(Picture).digest('hex').toUpperCase()
@@ -1173,7 +1219,7 @@ Test('Markdown renders GFM, keeps source editable and saved, and exports the sam
     '', '| 左对齐 | 居中 | 右对齐 |', '| :--- | :---: | ---: |', '| **标题** | 中文 | 42 |',
     '', '#### 代码块', '', '```typescript', 'const Value = "<tag>"', '  console.log(Value)', '```',
     '', '##### 链接和图片', '', '[参考链接][reference] · https://example.com',
-    '', `![本地示意图](MarkdownResource/${PictureName})`,
+    '', `![本地示意图](Resource/${PictureName})`,
     '', '###### 六级标题', '', '---', '', '转义：\\*保留星号\\*。',
     '', '[reference]: https://example.com "示例"',
   ].join('\n')
@@ -1185,7 +1231,7 @@ Test('Markdown renders GFM, keeps source editable and saved, and exports the sam
   await WriteFile(Join(ResourceFolder, TextName), TextBytes)
   const Project = Join(Folder, 'Markdown.hbr')
   await WriteFile(Project, Stringify({ ...EmptyDocument(), viewport: { x: 220, y: 20, zoom: 0.52 }, texts: [
-    { id: 'markdown', asset: `MarkdownResource/${TextName}`, x: 0, y: 0, width: 760, height: 1480 },
+    { id: 'markdown', asset: `Resource/${TextName}`, x: 0, y: 0, width: 760, height: 1480 },
   ] }))
   await Page.goto(ServiceUrl)
   await OpenProject(Page, 'Markdown')
@@ -1374,8 +1420,9 @@ Test('arrows support orthogonal drawing, endpoint and bend editing, styles, PNG 
   const Project = Join(ProjectDirectory, 'ArrowFree/ArrowFree.hbr')
   const Saved = Parse(await ReadFile(Project, 'utf8'))
   Expect(Saved.arrows).toHaveLength(1)
-  Expect(Saved.formatVersion).toBe(4)
-  Expect(Saved.arrows[0].arrow).toMatchObject({ color: '#ff4400', dashed: true, thickness: 4 })
+  Expect(Saved.formatVersion).toBe(6)
+  Expect(Object.keys(Saved.arrows[0])).toEqual(['id', 'asset'])
+  Expect((await ReadSavedArrows(Project))[0].arrow).toMatchObject({ color: '#ff4400', dashed: true, thickness: 4 })
   await Page.getByTestId('cleanup-resources').click()
   await Expect(Page.getByTestId('open')).toBeEnabled()
   await Page.reload()
@@ -1421,7 +1468,7 @@ Test('arrow bindings follow image and text objects, remap copies and survive del
   await Expect(Page).toHaveTitle('ArrowBindings.hbr — HybridRef')
   const Project = Join(ProjectDirectory, 'ArrowBindings/ArrowBindings.hbr')
   const Saved = Parse(await ReadFile(Project, 'utf8'))
-  const Arrows = Saved.arrows as BoardArrow[]
+  const Arrows = await ReadSavedArrows(Project)
   Expect(Arrows[0].arrow.startBinding?.id).toBe(Saved.images[0].id)
   Expect(Arrows[1].arrow.startBinding?.id).toBe(Saved.images[1].id)
   Expect(Arrows[0].arrow.endBinding?.id).toBe(Saved.texts[0].id)
@@ -1525,9 +1572,9 @@ Test('four handles on images and text create bound lines directly, with snapping
   await Page.keyboard.press('Control+Shift+z'); await Expect(Page.getByTestId('arrow-item')).toHaveCount(1)
   await Page.keyboard.press('Control+s'); await ChooseProjectName(Page, 'HandleConnections')
   await Expect(Page).toHaveTitle('HandleConnections.hbr — HybridRef')
-  const Saved = Parse(await ReadFile(Join(ProjectDirectory, 'HandleConnections/HandleConnections.hbr'), 'utf8'))
-  Expect(Saved.arrows[0].arrow.startBinding).toEqual({ id: Ids.image, side: 'right', offset: 0.5 })
-  Expect(Saved.arrows[0].arrow.endBinding).toEqual({ id: Ids.text, side: 'left', offset: 0.5 })
+  const Arrows = await ReadSavedArrows(Join(ProjectDirectory, 'HandleConnections/HandleConnections.hbr'))
+  Expect(Arrows[0].arrow.startBinding).toEqual({ id: Ids.image, side: 'right', offset: 0.5 })
+  Expect(Arrows[0].arrow.endBinding).toEqual({ id: Ids.text, side: 'left', offset: 0.5 })
   await Page.reload()
   await Expect(Page.getByTestId('arrow-item')).toHaveCount(1)
   await Text.click()

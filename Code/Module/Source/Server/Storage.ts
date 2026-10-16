@@ -2,22 +2,30 @@ import { createHash as CreateHash, randomUUID as RandomUUID } from 'node:crypto'
 import { constants as FsConstants } from 'node:fs'
 import { copyFile as CopyFile, link as Link, lstat as Lstat, mkdir as Mkdir, open as Open, readFile as ReadFile, readdir as Readdir, realpath as Realpath, rename as Rename, unlink as Unlink } from 'node:fs/promises'
 import { basename as Basename, dirname as Dirname, extname as Extname, isAbsolute as IsAbsolute, join as Join, relative as Relative, resolve as Resolve, win32 as Win32 } from 'node:path'
+import { setTimeout as Delay } from 'node:timers/promises'
 import { decode as DecodeBmp } from 'bmp-js'
 import Sharp from 'sharp'
 import { parseDocument as ParseDocument, stringify as Stringify } from 'yaml'
-import type { ArrowBinding, ArrowPoint, BoardArrow, BoardDocument, BoardImage, BoardText, CleanupResult, ImageAsset, ImportResult, LoadedBoard, TextResource } from '../Shared/Types'
+import type { ArrowBinding, ArrowPoint, ArrowResource, BoardArrow, BoardDocument, BoardImage, BoardText, CleanupResult, ImageAsset, ImportResult, LoadedBoard, TextResource } from '../Shared/Types'
 import { MarkdownImageSources, MarkdownLocalImagePath } from '../Shared/Markdown'
 import { DownloadMarkdownImage, MarkdownImageByteLimit } from './MarkdownImages'
 
 type DecodedImage = { bytes: Buffer; asset: ImageAsset }
 type CachedImage = DecodedImage & { Filename: string; Reference?: string; Source?: string }
 type StoredText = Omit<BoardText, 'text'> & { asset: string }
-type StoredDocument = Omit<BoardDocument, 'texts'> & { texts: StoredText[] }
+type ImageGeometry = Pick<BoardImage, 'x' | 'y' | 'width' | 'height'>
+type StoredImage = Pick<BoardImage, 'id' | 'asset'> & Partial<ImageGeometry>
+type StoredLine = { id: string; asset: string }
+type StoredDocument = Omit<BoardDocument, 'formatVersion' | 'images' | 'texts' | 'arrows'> & { formatVersion: 3 | 4 | 5 | 6; images: StoredImage[]; texts: StoredText[]; arrows?: (BoardArrow | StoredLine)[] }
+type LayoutConfig = { format: 'hybridref-texture' | 'hybridref-line-layout'; formatVersion: 1; instances: Record<string, ImageGeometry> }
+type LineSource = { Reference?: string; Value: BoardArrow }
+type ConfigWrite = { path: string; before: string | undefined; after: string }
 type ImmutableResource = { path: string; bytes: Buffer; Id: string; Label: string }
 const Hash = /^[a-f0-9]{64}$/
 const ShortFilename = /^Texture_([A-F0-9]{16})_([A-F0-9]{8})\.png$/
 const TextId = /^[A-Za-z0-9_-]{1,128}$/
 const TextFilename = /^Text_([A-F0-9]{16})_([A-F0-9]{8})\.yaml$/
+const LineFilename = /^Line_([A-F0-9]{16})_([A-F0-9]{8})\.yaml$/
 // All tabs share this queue: publishing one project and pruning its resources
 // must not race another tab's resource writes or project publication.
 let SaveQueue: Promise<void> = Promise.resolve()
@@ -36,6 +44,29 @@ function RequireNumber(Value: unknown, Label: string, Positive = false): number 
     throw new Error(`画板中的${Label}必须是${Positive ? '大于零的' : ''}有限数值。`)
   }
   return Value
+}
+
+function Geometry(Value: { x?: unknown; y?: unknown; width?: unknown; height?: unknown }, Label = '图片'): ImageGeometry {
+  return { x: RequireNumber(Value.x, `${Label} x`), y: RequireNumber(Value.y, `${Label} y`), width: RequireNumber(Value.width, `${Label}宽度`, true), height: RequireNumber(Value.height, `${Label}高度`, true) }
+}
+
+function ConfigPath(Asset: string): string { return Asset.replace(/\.(png|yaml)$/, '.config') }
+function ConfigFormat(Path: string): LayoutConfig['format'] { return Basename(Path).startsWith('Line_') ? 'hybridref-line-layout' : 'hybridref-texture' }
+
+function ParseConfig(Text: string, Format: LayoutConfig['format'] = 'hybridref-texture'): LayoutConfig {
+  const Label = Format === 'hybridref-texture' ? '图片配置' : '箭头配置'
+  const Value = ParseYaml(Text, Label)
+  if (!IsRecord(Value) || Value.format !== Format || Value.formatVersion !== 1 || !IsRecord(Value.instances)) throw new Error(`${Label}格式无效，请使用第 1 版 ${Format}。`)
+  const Instances: Record<string, ImageGeometry> = Object.create(null)
+  for (const [Id, Item] of Object.entries(Value.instances)) {
+    if (!Id.trim() || !IsRecord(Item)) throw new Error(`${Label}中的对象 ID 或布局无效。`)
+    Instances[Id] = Geometry(Item, Format === 'hybridref-texture' ? '图片' : '箭头')
+  }
+  return { format: Format, formatVersion: 1, instances: Instances }
+}
+
+function SameGeometry(Left: ImageGeometry | undefined, Right: ImageGeometry | undefined): boolean {
+  return Left === Right || Boolean(Left && Right && Left.x === Right.x && Left.y === Right.y && Left.width === Right.width && Left.height === Right.height)
 }
 
 function RequireOpacity(Value: unknown, Label: string): number {
@@ -105,25 +136,18 @@ function ValidateDocument(Value: unknown, Stored: boolean): BoardDocument | Stor
   if (Value.formatVersion === 1 || 'boards' in Value) {
     throw new Error('这是旧版 HybridRef / Citadel 画板，精简版暂不支持读取或覆盖。请保留原文件，使用新的 .hbr 文件。')
   }
-  if (Value.format !== 'hybridref' || (Value.formatVersion !== 3 && Value.formatVersion !== 4 && !(Stored && Value.formatVersion === 2))) throw new Error('不支持此画板格式，请使用 HybridRef 第 2、3 或 4 版 .hbr 文件。')
+  if (Value.format !== 'hybridref' || (Value.formatVersion !== 3 && Value.formatVersion !== 4 && !(Stored && [2, 5, 6].some((Version) => Version === Value.formatVersion)))) throw new Error('不支持此画板格式，请使用 HybridRef 第 2 至 6 版 .hbr 文件。')
   if (!IsRecord(Value.viewport) || !Array.isArray(Value.images)) throw new Error('画板缺少有效的 viewport 或 images。')
   if (Value.formatVersion !== 2 && !Array.isArray(Value.texts)) throw new Error('画板缺少有效的 texts。')
   if (Value.formatVersion === 4 && !Array.isArray(Value.arrows)) throw new Error('第 4 版画板缺少有效的 arrows。')
   const Ids = new Set<string>()
-  const Images = Value.images.map((Entry, Index): BoardImage => {
+  const Images = Value.images.map((Entry, Index): StoredImage => {
     if (!IsRecord(Entry) || typeof Entry.id !== 'string' || !Entry.id.trim()) throw new Error(`第 ${Index + 1} 张图片缺少有效 ID。`)
     if (Ids.has(Entry.id)) throw new Error(`画板包含重复的图片 ID：${Entry.id}`)
     Ids.add(Entry.id)
     if (typeof Entry.asset !== 'string' || !Entry.asset || (!Stored && !Hash.test(Entry.asset))) throw new Error(`图片 ${Entry.id} 的资源引用无效。`)
     if (Stored) ValidateRelativeAsset(Entry.asset)
-    return {
-      id: Entry.id,
-      asset: Entry.asset,
-      x: RequireNumber(Entry.x, '图片 x'),
-      y: RequireNumber(Entry.y, '图片 y'),
-      width: RequireNumber(Entry.width, '图片宽度', true),
-      height: RequireNumber(Entry.height, '图片高度', true),
-    }
+    return { id: Entry.id, asset: Entry.asset, ...(Value.formatVersion === 5 || Value.formatVersion === 6 ? {} : Geometry(Entry)) }
   })
   const Texts = (Value.formatVersion === 2 ? [] : Value.texts as unknown[]).map((Entry, Index): BoardText | StoredText => {
     if (!IsRecord(Entry) || typeof Entry.id !== 'string' || !TextId.test(Entry.id)) throw new Error(`第 ${Index + 1} 个文本缺少安全有效的 ID。`)
@@ -138,10 +162,16 @@ function ValidateDocument(Value: unknown, Stored: boolean): BoardDocument | Stor
     return { ...Geometry, text: ValidateText(Entry.text) }
   })
   if (Value.arrows !== undefined && !Array.isArray(Value.arrows)) throw new Error('画板 arrows 必须是列表。')
-  const Arrows = ((Value.arrows ?? []) as unknown[]).map((Item) => ValidateArrow(Item, Ids))
+  const Arrows = ((Value.arrows ?? []) as unknown[]).map((Item): BoardArrow | StoredLine => {
+    if (Value.formatVersion !== 6) return ValidateArrow(Item, Ids)
+    if (!IsRecord(Item) || typeof Item.id !== 'string' || !TextId.test(Item.id) || typeof Item.asset !== 'string') throw new Error('箭头资源引用无效。')
+    if (Ids.has(Item.id)) throw new Error(`画板包含重复的对象 ID：${Item.id}`)
+    Ids.add(Item.id)
+    return { id: Item.id, asset: ValidateRelativeAsset(Item.asset, 'line') }
+  })
   return {
     format: 'hybridref',
-    formatVersion: Arrows.length ? 4 : 3,
+    formatVersion: Value.formatVersion === 6 ? 6 : Value.formatVersion === 5 ? 5 : Arrows.length ? 4 : 3,
     viewport: {
       x: RequireNumber(Value.viewport.x, '视口 x'),
       y: RequireNumber(Value.viewport.y, '视口 y'),
@@ -172,15 +202,15 @@ function InsertStoredOrder<Item extends { id: string }>(Items: Item[], Value: It
 }
 
 /** Paths are filesystem strings, never URLs: # and % stay literal. */
-function ValidateRelativeAsset(Source: string, Text = false): string {
-  const Label = Text ? '文本' : '图片'
+function ValidateRelativeAsset(Source: string, Text: boolean | 'line' = false): string {
+  const Label = Text === 'line' ? '箭头' : Text ? '文本' : '图片'
   const Normalized = Source.replace(/\\/g, '/')
   const Parts = Normalized.split('/')
   if (IsAbsolute(Source) || Win32.isAbsolute(Source) || Normalized.startsWith('/') || Source.includes(':') || Source.includes('\0') || Parts.some((Part) => !Part || Part === '..' || Part === '.')) {
     throw new Error(`${Label}资源路径不安全，必须位于画板目录内：${Source}`)
   }
   const Filename = Parts[Parts.length - 1]
-  if (!(Text ? TextFilename : ShortFilename).test(Filename)) throw new Error(`${Label}资源名称无效，应为 ${Text ? 'Text' : 'Texture'}_<16 位大写时间戳哈希>_<8 位大写内容哈希>.${Text ? 'yaml' : 'png'}：${Source}`)
+  if (!(Text === 'line' ? LineFilename : Text ? TextFilename : ShortFilename).test(Filename)) throw new Error(`${Label}资源名称无效，应为 ${Text === 'line' ? 'Line' : Text ? 'Text' : 'Texture'}_<16 位大写时间戳哈希>_<8 位大写内容哈希>.${Text ? 'yaml' : 'png'}：${Source}`)
   return Normalized
 }
 
@@ -201,7 +231,30 @@ async function GuardedResource(ProjectDir: string, Path: string, Label = '图片
   return FileValue
 }
 
-async function AtomicWrite(Path: string, Bytes: Buffer | string, Exclusive = false): Promise<void> {
+async function ReadLayout(ProjectDir: string, Item: StoredLine, Configs: Map<string, LayoutConfig>): Promise<ImageGeometry> {
+  const Reference = ConfigPath(Item.asset), Path = Resolve(ProjectDir, Reference), Format = ConfigFormat(Path)
+  const Label = Format === 'hybridref-texture' ? '图片配置' : '箭头配置'
+  let Config = Configs.get(PathKey(Path))
+  if (!Config) {
+    try { Config = ParseConfig(await ReadFile(await GuardedResource(ProjectDir, Path, Label), 'utf8'), Format) }
+    catch (CaughtError) { throw new Error(`无法读取${Label} ${Reference}：${ReadableError(CaughtError)}`) }
+    Configs.set(PathKey(Path), Config)
+  }
+  const Layout = Config.instances[Item.id]
+  if (!Layout) throw new Error(`${Label} ${Reference} 缺少对象 ${Item.id} 的布局，请修复配置后重新打开。`)
+  return Layout
+}
+
+async function ReadLine(ProjectDir: string, Item: StoredLine): Promise<ArrowResource> {
+  const Reference = ValidateRelativeAsset(Item.asset, 'line')
+  const Bytes = await ReadFile(await GuardedResource(ProjectDir, Resolve(ProjectDir, Reference), '箭头'))
+  if (LineFilename.exec(Basename(Reference))![2] !== Digest(Bytes).slice(0, 8).toUpperCase()) throw new Error(`箭头资源内容哈希不匹配：${Reference}`)
+  const Value = ParseYaml(Bytes.toString('utf8'), '箭头资源')
+  if (!IsRecord(Value) || Value.format !== 'hybridref-line' || Value.formatVersion !== 1) throw new Error(`箭头资源格式无效：${Reference}`)
+  return ValidateArrow({ id: Item.id, x: 0, y: 0, width: 1, height: 1, arrow: Value.arrow }, new Set()).arrow
+}
+
+async function AtomicWrite(Path: string, Bytes: Buffer | string, Exclusive = false, Expected?: string): Promise<void> {
   const Temporary = Join(Dirname(Path), `.${Basename(Path)}.${RandomUUID()}.tmp`)
   try {
     const FileValue = await Open(Temporary, 'wx')
@@ -216,7 +269,18 @@ async function AtomicWrite(Path: string, Bytes: Buffer | string, Exclusive = fal
         // written temporary file exclusively before publishing the YAML.
         await CopyFile(Temporary, Path, FsConstants.COPYFILE_EXCL)
       }
-    } else await Rename(Temporary, Path)
+    } else {
+      // Windows scanners may briefly hold a newly read config without delete
+      // sharing. Retry the rename, rechecking the baseline on every attempt.
+      for (let Attempt = 0; ; Attempt++) {
+        if (Expected !== undefined && await ReadFile(Path, 'utf8') !== Expected) throw new Error(`文件在保存过程中被修改，未覆盖：${Path}`)
+        try { await Rename(Temporary, Path); break }
+        catch (CaughtError) {
+          if (process.platform !== 'win32' || Attempt >= 5 || !['EPERM', 'EACCES', 'EBUSY'].includes((CaughtError as NodeJS.ErrnoException)?.code ?? '')) throw CaughtError
+          await Delay(25 * (Attempt + 1))
+        }
+      }
+    }
   } finally {
     await Unlink(Temporary).catch((CaughtError: unknown) => { if (!Missing(CaughtError)) throw CaughtError })
   }
@@ -270,7 +334,7 @@ async function SharedReferences(Target: string, ResourceDir: string): Promise<Se
       if (PathKey(Project) === PathKey(Target)) continue
       const Value = ParseYaml(await ReadFile(Project, 'utf8'), `共享资源引用 ${Project}`)
       if (!IsRecord(Value)) throw new Error(`无法确认共享资源引用，未清理：${Project}`)
-      for (const Items of [Value.images, Value.texts]) {
+      for (const Items of [Value.images, Value.texts, Value.arrows]) {
         if (Items === undefined) continue
         if (!Array.isArray(Items)) throw new Error(`无法确认共享资源引用，未清理：${Project}`)
         for (const Item of Items) {
@@ -298,9 +362,13 @@ export class ImageStore {
   private Images = new Map<string, CachedImage>()
   private FilenameIds = new Map<string, string>()
   private TextNames = new Map<string, string>()
+  private LineNames = new Map<string, string>()
+  private LineSources = new Map<string, LineSource>()
+  private MissingLineReferences = new Map<string, StoredLine>()
   private MissingTextReferences = new Map<string, StoredText>()
   private SourcePath: string | undefined
   private SourceDocument: StoredDocument | undefined
+  private ConfigSources = new Map<string, LayoutConfig>()
   private TimestampNames = new Set<string>()
   private NextTimestamp = 0
   private Revision = 0
@@ -312,9 +380,13 @@ export class ImageStore {
     this.Images.clear()
     this.FilenameIds.clear()
     this.TextNames.clear()
+    this.LineNames.clear()
+    this.LineSources.clear()
+    this.MissingLineReferences.clear()
     this.MissingTextReferences.clear()
     this.SourcePath = undefined
     this.SourceDocument = undefined
+    this.ConfigSources.clear()
     this.TimestampNames.clear()
   }
 
@@ -408,10 +480,16 @@ export class ImageStore {
     const NextTextNames = new Map<string, string>()
     const NextMissingTexts = new Map<string, StoredText>()
     const NextTimestampNames = new Set<string>()
+    const NextConfigs = new Map<string, LayoutConfig>()
+    const NextLineNames = new Map<string, string>()
+    const NextLines = new Map<string, LineSource>()
+    const NextMissingLines = new Map<string, StoredLine>()
+    const Images: BoardImage[] = []
     const MissingResources: string[] = []
     const LoadedPaths = new Map<string, string>()
     for (const ImageValue of Stored.images) {
       const Reference = ValidateRelativeAsset(ImageValue.asset)
+      const Layout = Stored.formatVersion >= 5 ? await ReadLayout(ProjectDir, ImageValue, NextConfigs) : Geometry(ImageValue)
       const Filename = Basename(Reference)
       let Id = LoadedPaths.get(Reference)
       if (!Id) {
@@ -445,7 +523,7 @@ export class ImageStore {
         NextTimestampNames.add(ShortFilename.exec(Filename)![1])
         LoadedPaths.set(Reference, Id)
       }
-      ImageValue.asset = Id
+      Images.push({ id: ImageValue.id, asset: Id, ...Layout })
     }
     const Texts: BoardText[] = []
     for (const TextValue of Stored.texts) {
@@ -465,15 +543,39 @@ export class ImageStore {
       NextTextNames.set(TextValue.id, Name[1])
       NextTimestampNames.add(Name[1])
     }
+    const Arrows: BoardArrow[] = []
+    for (const Item of Stored.arrows ?? []) {
+      if (!('asset' in Item)) { Arrows.push(Item); NextLines.set(Item.id, { Value: structuredClone(Item) }); continue }
+      let Arrow: ArrowResource
+      try { Arrow = await ReadLine(ProjectDir, Item) }
+      catch (CaughtError) {
+        if (!Missing(CaughtError)) throw CaughtError
+        MissingResources.push(Item.asset)
+        NextMissingLines.set(Item.id, Item)
+        continue
+      }
+      const Layout = await ReadLayout(ProjectDir, Item, NextConfigs)
+      const Line = { id: Item.id, ...Layout, arrow: Arrow }
+      const Name = LineFilename.exec(Basename(Item.asset))![1]
+      NextLineNames.set(Item.id, Name)
+      NextTimestampNames.add(Name)
+      Arrows.push(Line)
+      NextLines.set(Item.id, { Reference: Item.asset, Value: structuredClone(Line) })
+    }
     if (Revision !== this.Revision) throw new Error('画板加载已取消。')
     this.Images = Next
     this.FilenameIds = NextFilenames
     this.TextNames = NextTextNames
+    this.LineNames = NextLineNames
+    this.LineSources = NextLines
+    this.MissingLineReferences = NextMissingLines
     this.MissingTextReferences = NextMissingTexts
     this.SourcePath = Target
     this.SourceDocument = SourceDocument
+    this.ConfigSources = NextConfigs
     this.TimestampNames = NextTimestampNames
-    return { path: Target, document: { ...Stored, texts: Texts }, assets: [...Next.values()].map((ImageValue) => ({ ...ImageValue.asset })), ...(MissingResources.length ? { missingResources: MissingResources } : {}) }
+    const { arrows: StoredArrows, ...Document } = Stored
+    return { path: Target, document: { ...Document, formatVersion: Arrows.length ? 4 : 3, images: Images, texts: Texts, ...(Arrows.length ? { arrows: Arrows } : {}) }, assets: [...Next.values()].map((ImageValue) => ({ ...ImageValue.asset })), ...(MissingResources.length ? { missingResources: MissingResources } : {}) }
   }
 
   private Snapshot(Doc: BoardDocument): { Document: BoardDocument; Assets: Map<string, CachedImage> } {
@@ -495,12 +597,56 @@ export class ImageStore {
     return { Document, Assets }
   }
 
+  private async PrepareConfigs(ProjectDir: string, Items: StoredLine[], Layouts: (ImageGeometry & { id: string })[], Protected: Set<string>, PreviousPaths = new Map<string, string>()): Promise<ConfigWrite[]> {
+    const Groups = new Map<string, Record<string, ImageGeometry>>()
+    for (const Item of Items) {
+      const Path = Resolve(ProjectDir, ConfigPath(Item.asset))
+      const Instances = Groups.get(Path) ?? Object.create(null) as Record<string, ImageGeometry>
+      Instances[Item.id] = Geometry(Layouts.find((Layout) => Layout.id === Item.id)!)
+      Groups.set(Path, Instances)
+    }
+    const Writes: ConfigWrite[] = []
+    for (const [Path, Instances] of Groups) {
+      const Format = ConfigFormat(Path), Label = Format === 'hybridref-texture' ? '图片' : '箭头'
+      let Before: string | undefined
+      try { Before = await ReadFile(await GuardedResource(ProjectDir, Path, `${Label}配置`), 'utf8') }
+      catch (CaughtError) { if (!Missing(CaughtError)) throw CaughtError }
+      const PreviousPath = PreviousPaths.get(PathKey(Path))
+      const Base = this.ConfigSources.get(PathKey(PreviousPath ?? Path))
+      let Seed: LayoutConfig | undefined
+      if (PreviousPath) {
+        try { Seed = ParseConfig(await ReadFile(await GuardedResource(ProjectDir, PreviousPath, `${Label}配置`), 'utf8'), Format) }
+        catch (CaughtError) { if (!Missing(CaughtError) || Base) throw CaughtError }
+      }
+      if (Base && Before === undefined && !PreviousPath) throw new Error(`${Label}配置已在外部删除，请重新打开画板后再保存：${Path}`)
+      const Config: LayoutConfig = Before === undefined ? Seed ?? { format: Format, formatVersion: 1, instances: Object.create(null) } : ParseConfig(Before, Format)
+      let Changed = Before === undefined
+      for (const [Id, Layout] of Object.entries(Instances)) {
+        const Original = Base?.instances[Id], Current = Config.instances[Id]
+        // An untouched instance must not overwrite changes made by another tab
+        // or an agent. Conflicting edits to the same instance require a reload.
+        if (Original && Current && SameGeometry(Original, Layout)) continue
+        if (!SameGeometry(Current, Original) && !SameGeometry(Current, Layout)) throw new Error(`${Label}布局已在外部修改，请重新打开画板后再编辑：${Path}（${Id}）`)
+        if (!SameGeometry(Current, Layout)) { Config.instances[Id] = Layout; Changed = true }
+      }
+      if (!Protected.has(PathKey(Path.replace(/\.config$/, Format === 'hybridref-texture' ? '.png' : '.yaml')))) {
+        for (const Old of [...this.SourceDocument?.images ?? [], ...this.SourceDocument?.arrows?.filter((Item): Item is StoredLine => 'asset' in Item) ?? []]) {
+          if (!this.SourcePath || PathKey(Resolve(Dirname(this.SourcePath), ConfigPath(Old.asset))) !== PathKey(Path) || Object.hasOwn(Instances, Old.id)) continue
+          if (Base?.instances[Old.id] && !SameGeometry(Config.instances[Old.id], Base.instances[Old.id])) throw new Error(`${Label}布局已在外部修改，请重新打开画板后再删除：${Path}（${Old.id}）`)
+          if (Object.hasOwn(Config.instances, Old.id)) { delete Config.instances[Old.id]; Changed = true }
+        }
+      }
+      if (Changed) Writes.push({ path: Path, before: Before, after: Serialize(Config) })
+    }
+    return Writes
+  }
+
   private async WriteProject(Target: string, Document: BoardDocument, Assets: Map<string, CachedImage>): Promise<number> {
       // Saving under the old demo's name must not silently replace version 1.
       let Previous: StoredDocument | undefined
       try { Previous = ParseProject(await ReadFile(Target, 'utf8')) } catch (CaughtError) { if (!Missing(CaughtError)) throw CaughtError }
       const ProjectDir = Dirname(Target)
-      const ResourceName = `${Basename(Target, Extname(Target))}Resource`
+      const ResourceName = 'Resource'
       const SaveAs = Boolean(this.SourcePath && PathKey(this.SourcePath) !== PathKey(Target))
       let Source = Previous ?? this.SourceDocument
       const SourceDir = SaveAs ? Dirname(this.SourcePath!) : ProjectDir
@@ -519,12 +665,34 @@ export class ImageStore {
         }
         throw new Error(`原先丢失的文本资源已恢复，请重新打开画板或执行清理以恢复文字后再保存：${Item.asset}`)
       }
+      const SourceLines = (Source?.arrows ?? []).filter((Item): Item is StoredLine => 'asset' in Item)
+      const PreservedLines: StoredLine[] = []
+      for (const Item of SourceLines) {
+        if (!this.MissingLineReferences.has(Item.id) || Document.arrows?.some((Line) => Line.id === Item.id)) continue
+        try { await GuardedResource(SourceDir, Resolve(SourceDir, Item.asset), '箭头') }
+        catch (CaughtError) {
+          if (!Missing(CaughtError)) throw CaughtError
+          const Filename = SaveAs && PathKey(SourceDir) === PathKey(ProjectDir)
+            ? `Line_${this.AllocateTimestampName()}_${LineFilename.exec(Basename(Item.asset))![2]}.yaml` : Basename(Item.asset)
+          PreservedLines.push(SaveAs ? { ...Item, asset: `${ResourceName}/${Filename}` } : Item)
+          continue
+        }
+        throw new Error(`原先丢失的箭头资源已恢复，请重新打开画板或执行清理后再保存：${Item.asset}`)
+      }
       await Mkdir(ProjectDir, { recursive: true })
       const ResourceDir = Join(ProjectDir, ResourceName)
       await Mkdir(ResourceDir, { recursive: true })
       await GuardedResource(ProjectDir, ResourceDir)
       const Protected = await SharedReferences(Target, ResourceDir)
       for (const Item of Document.texts) ProtectMarkdownImages(Protected, Item.text.content, ProjectDir)
+      // A sibling Save As shares Resource/, so give its textures new names to
+      // prevent later layout edits from also changing the original project.
+      if (SaveAs && PathKey(SourceDir) === PathKey(ProjectDir)) {
+        for (const [Id, Asset] of Assets) {
+          const Suffix = ShortFilename.exec(Asset.Filename)![2]
+          Assets.set(Id, { ...Asset, Filename: `Texture_${this.AllocateTimestampName()}_${Suffix}.png` })
+        }
+      }
       // Validate all existing targets before writing any resource or the YAML.
       const Resources: ImmutableResource[] = []
       for (const [Id, ImageValue] of Assets) {
@@ -543,9 +711,66 @@ export class ImageStore {
         Resources.push({ path: Join(ResourceDir, Filename), bytes: Bytes, Id, Label: '文本' })
         return { id: TextValue.id, asset: `${ResourceName}/${Filename}`, x: TextValue.x, y: TextValue.y, width: TextValue.width, height: TextValue.height }
       })
+      const Lines: StoredLine[] = [], LineLayouts: BoardArrow[] = [], ConfigLines: StoredLine[] = []
+      const PreviousConfigPaths = new Map<string, string>()
+      const NextLineSources = new Map<string, LineSource>()
+      for (const Item of Document.arrows ?? []) {
+        const Original = this.LineSources.get(Item.id)
+        const Latest = SourceLines.find((Line) => Line.id === Item.id)
+        if (Original?.Reference && Latest && Original.Reference !== Latest.asset) {
+          if (SaveAs || !SameGeometry(Original.Value, Item) || Serialize(Original.Value.arrow) !== Serialize(Item.arrow)) throw new Error(`箭头已在外部修改，请重新打开画板后再编辑：${Latest.asset}`)
+          // Another writer changed this untouched arrow. Keep their reference;
+          // retain our old baseline so a later stale edit still detects conflict.
+          Lines.push(Latest)
+          continue
+        }
+        if (Latest && !SaveAs) {
+          try { await ReadLine(ProjectDir, Latest) }
+          catch (CaughtError) { if (!Missing(CaughtError)) throw CaughtError }
+        }
+        let Name = this.LineNames.get(Item.id)
+        if (!Name || SaveAs && PathKey(SourceDir) === PathKey(ProjectDir)) {
+          Name = this.AllocateTimestampName()
+          this.LineNames.set(Item.id, Name)
+        }
+        const Bytes = Buffer.from(Serialize({ format: 'hybridref-line', formatVersion: 1, arrow: Item.arrow }))
+        const Id = Digest(Bytes), Filename = `Line_${Name}_${Id.slice(0, 8).toUpperCase()}.yaml`
+        const Reference = `${ResourceName}/${Filename}`
+        Resources.push({ path: Join(ResourceDir, Filename), bytes: Bytes, Id, Label: '箭头' })
+        const Stored = { id: Item.id, asset: Reference }
+        Lines.push(Stored); ConfigLines.push(Stored); LineLayouts.push(Item)
+        NextLineSources.set(Item.id, { Reference, Value: structuredClone(Item) })
+        if (!SaveAs && Original?.Reference) {
+          const BeforePath = Resolve(ProjectDir, ConfigPath(Original.Reference)), AfterPath = Resolve(ProjectDir, ConfigPath(Reference))
+          if (PathKey(BeforePath) !== PathKey(AfterPath)) PreviousConfigPaths.set(PathKey(AfterPath), BeforePath)
+        }
+      }
+      for (const Item of PreservedLines) {
+        InsertStoredOrder(Lines, Item, SourceLines)
+        if (SaveAs) {
+          const Original = SourceLines.find((Line) => Line.id === Item.id)!
+          try {
+            const Bytes = await ReadFile(await GuardedResource(SourceDir, Resolve(SourceDir, ConfigPath(Original.asset)), '箭头配置'))
+            ParseConfig(Bytes.toString('utf8'), 'hybridref-line-layout')
+            Resources.push({ path: Resolve(ProjectDir, ConfigPath(Item.asset)), bytes: Bytes, Id: Digest(Bytes), Label: '箭头配置' })
+          } catch (CaughtError) { if (!Missing(CaughtError)) throw CaughtError }
+        }
+      }
       // Text that could not be loaded remains an explicit project reference.
       // Only a manual edit of the latest on-disk YAML removes this hidden entry.
       for (const Item of PreservedTexts) InsertStoredOrder(Texts, Item, Source!.texts)
+      const Portable: StoredDocument = {
+        ...Document, formatVersion: 6,
+        images: Document.images.map((ImageValue) => {
+          const Asset = Assets.get(ImageValue.asset)!
+          return { id: ImageValue.id, asset: Asset.asset.missing && !SaveAs ? Asset.Reference! : `${ResourceName}/${Asset.Filename}` }
+        }),
+        texts: Texts,
+        ...(Lines.length ? { arrows: Lines } : {}),
+      }
+      if (!Lines.length) delete Portable.arrows
+      const ConfigItems = [...Portable.images, ...ConfigLines], Layouts = [...Document.images, ...LineLayouts]
+      const ConfigWrites = await this.PrepareConfigs(ProjectDir, ConfigItems, Layouts, Protected, PreviousConfigPaths)
       const Absent: ImmutableResource[] = []
       for (const Resource of Resources) {
         try {
@@ -564,23 +789,58 @@ export class ImageStore {
           if (Digest(Bytes) !== Resource.Id) throw new Error(`目标${Resource.Label}资源已损坏，未覆盖：${Resource.path}`)
         }
       }
-      const Portable: StoredDocument = {
-        ...Document,
-        images: Document.images.map((ImageValue) => {
-          const Asset = Assets.get(ImageValue.asset)!
-          return { ...ImageValue, asset: Asset.asset.missing && !SaveAs ? Asset.Reference! : `${ResourceName}/${Asset.Filename}` }
-        }),
-        texts: Texts,
+      const Published: ConfigWrite[] = []
+      try {
+        for (const Write of ConfigWrites) {
+          try { await GuardedResource(ProjectDir, Dirname(Write.path), '资源配置') }
+          catch (CaughtError) { if (!Missing(CaughtError)) throw CaughtError }
+          await Mkdir(Dirname(Write.path), { recursive: true })
+          await GuardedResource(ProjectDir, Dirname(Write.path), '资源配置')
+          let Current: string | undefined
+          try { Current = await ReadFile(await GuardedResource(ProjectDir, Write.path, '资源配置'), 'utf8') }
+          catch (CaughtError) { if (!Missing(CaughtError)) throw CaughtError }
+          if (Current !== Write.before) throw new Error(`资源配置在保存过程中被修改，请重新打开画板：${Write.path}`)
+          await AtomicWrite(Write.path, Write.after, Write.before === undefined, Write.before)
+          Published.push(Write)
+        }
+        const Output = Serialize(Portable)
+        const Current = await ReadFile(Target, 'utf8').catch((CaughtError: unknown) => { if (!Missing(CaughtError)) throw CaughtError; return undefined })
+        if (Output !== Current) await AtomicWrite(Target, Output, false, Current)
+      } catch (CaughtError) {
+        // Restore only our own writes when publishing the project fails. Never
+        // roll back an intervening external edit.
+        for (const Write of Published.reverse()) {
+          if (await ReadFile(Write.path, 'utf8').catch(() => undefined) !== Write.after) continue
+          if (Write.before === undefined) await Unlink(Write.path)
+          else await AtomicWrite(Write.path, Write.before, false, Write.after)
+        }
+        throw CaughtError
       }
-      await AtomicWrite(Target, Serialize(Portable))
       this.SourcePath = Target
       this.SourceDocument = Portable
+      for (const Write of ConfigWrites) {
+        const Base = this.ConfigSources.get(PathKey(Write.path))
+        if (!Base) continue
+        const Saved = ParseConfig(Write.after, ConfigFormat(Write.path))
+        for (const Id of Object.keys(Base.instances)) if (!Object.hasOwn(Saved.instances, Id)) delete Base.instances[Id]
+      }
+      for (const Item of ConfigItems) {
+        const Key = PathKey(Resolve(ProjectDir, ConfigPath(Item.asset)))
+        const Config = this.ConfigSources.get(Key) ?? { format: ConfigFormat(Item.asset), formatVersion: 1, instances: Object.create(null) } as LayoutConfig
+        Config.instances[Item.id] = Geometry(Layouts.find((Layout) => Layout.id === Item.id)!)
+        this.ConfigSources.set(Key, Config)
+      }
+      for (const [Id, Item] of NextLineSources) this.LineSources.set(Id, Item)
+      for (const Id of this.LineSources.keys()) if (!Lines.some((Item) => Item.id === Id)) this.LineSources.delete(Id)
+      this.MissingLineReferences = new Map(PreservedLines.map((Item) => [Item.id, Item]))
       for (const Item of PreservedTexts) this.MissingTextReferences.set(Item.id, Item)
       for (const Id of this.MissingTextReferences.keys()) {
         if (!Portable.texts.some((Item) => Item.id === Id)) this.MissingTextReferences.delete(Id)
       }
-      for (const Item of [...Portable.images, ...Portable.texts]) Protected.add(PathKey(Resolve(ProjectDir, Item.asset)))
+      for (const Item of [...Portable.images, ...Portable.texts, ...Lines]) Protected.add(PathKey(Resolve(ProjectDir, Item.asset)))
+      for (const Path of [...Protected]) if (Path.endsWith('.png') || /^Line_.*\.yaml$/i.test(Basename(Path))) Protected.add(PathKey(ConfigPath(Path)))
       for (const [Id, Asset] of Assets) {
+        this.Images.set(Id, Asset)
         if (Asset.asset.missing) Asset.Reference = Portable.images[Document.images.findIndex((Item) => Item.asset === Id)].asset
         Asset.Source = Resolve(ProjectDir, Asset.asset.missing ? Asset.Reference! : `${ResourceName}/${Asset.Filename}`)
       }
@@ -588,13 +848,13 @@ export class ImageStore {
       // Prune only after the project file was atomically published. Keep unknown
       // file types, subdirectories and links; never recurse into resource data.
       for (const Entry of await Readdir(ResourceDir, { withFileTypes: true })) {
-        if (!Entry.isFile() || Entry.isSymbolicLink() || !['.png', '.yaml'].includes(Extname(Entry.name).toLowerCase())) continue
+        if (!Entry.isFile() || Entry.isSymbolicLink() || !(['.png', '.yaml'].includes(Extname(Entry.name).toLowerCase()) || /^(Texture|Line)_[A-F0-9]{16}_[A-F0-9]{8}\.config$/.test(Entry.name))) continue
         const Resource = Join(ResourceDir, Entry.name)
         if (Protected.has(PathKey(Resource))) continue
         const Info = await Lstat(Resource).catch((CaughtError: unknown) => { if (!Missing(CaughtError)) throw CaughtError; return null })
         if (!Info?.isFile() || Info.isSymbolicLink()) continue
         await GuardedResource(ProjectDir, Resource)
-        try { await Unlink(Resource); RemovedFiles += 1 }
+        try { await Unlink(Resource); this.ConfigSources.delete(PathKey(Resource)); RemovedFiles += 1 }
         catch (CaughtError) { if (!Missing(CaughtError)) throw CaughtError }
       }
       return RemovedFiles
@@ -616,6 +876,19 @@ export class ImageStore {
       try { Stored = ParseProject(await ReadFile(Target, 'utf8')) }
       catch (CaughtError) { if (!Missing(CaughtError)) throw CaughtError }
       const RestoredAssets = new Map<string, CachedImage>()
+      for (const Item of Stored?.arrows ?? []) {
+        if (!('asset' in Item)) continue
+        let Arrow: ArrowResource
+        try { Arrow = await ReadLine(ProjectDir, Item) }
+        catch (CaughtError) { if (!Missing(CaughtError)) throw CaughtError; continue }
+        if (!this.MissingLineReferences.has(Item.id) || Document.arrows?.some((Line) => Line.id === Item.id)) continue
+        const Layout = await ReadLayout(ProjectDir, Item, this.ConfigSources)
+        const Line = { id: Item.id, ...Layout, arrow: Arrow }
+        InsertStoredOrder(Document.arrows ??= [], Line, Stored!.arrows!)
+        Document.formatVersion = 4
+        this.LineNames.set(Item.id, LineFilename.exec(Basename(Item.asset))![1])
+        this.LineSources.set(Item.id, { Reference: Item.asset, Value: structuredClone(Line) })
+      }
       for (const [Text, Items] of [[false, Stored?.images ?? []], [true, Stored?.texts ?? []]] as const) {
         for (const Item of Items) {
           const Reference = ValidateRelativeAsset(Item.asset, Text)
@@ -625,7 +898,8 @@ export class ImageStore {
             if (Pattern.exec(Basename(Reference))![2] !== Digest(Bytes).slice(0, 8).toUpperCase()) throw new Error(`资源内容哈希不匹配，文件可能已损坏或被修改：${Reference}`)
             if (Text && this.MissingTextReferences.has(Item.id) && !Document.texts.some((Value) => Value.id === Item.id)) {
               const TextValue = ValidateText(ParseYaml(Bytes.toString('utf8'), '文本资源'))
-              InsertStoredOrder(Document.texts, { id: Item.id, x: Item.x, y: Item.y, width: Item.width, height: Item.height, text: TextValue }, Stored!.texts)
+              const TextItem = Item as StoredText
+              InsertStoredOrder(Document.texts, { id: Item.id, x: TextItem.x, y: TextItem.y, width: TextItem.width, height: TextItem.height, text: TextValue }, Stored!.texts)
               this.TextNames.set(Item.id, TextFilename.exec(Basename(Reference))![1])
             }
           } catch (CaughtError) {
@@ -663,6 +937,7 @@ export class ImageStore {
       const MissingResources = [...new Set([
         ...[...ReferencedAssets.values()].filter((Item) => Item.asset.missing).map((Item) => Item.Reference!),
         ...[...this.MissingTextReferences.values()].map((Item) => Item.asset),
+        ...[...this.MissingLineReferences.values()].map((Item) => Item.asset),
       ])]
       return { path: Target, document: Document, assets: [...ReferencedAssets.values()].map((Item) => ({ ...Item.asset })), removedFiles: RemovedFiles, ...(MissingResources.length ? { missingResources: MissingResources } : {}) }
     })

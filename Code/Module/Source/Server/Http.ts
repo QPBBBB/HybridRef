@@ -150,6 +150,7 @@ async function Projects(ProjectDirectory: string): Promise<{ name: string; path:
     if (!Entry.isDirectory() || ResourceNames.has(Key(Entry.name))) return []
     // Only inspect a project's immediate files; never descend into its assets.
     const Children = await Readdir(Path, { withFileTypes: true }).catch(() => [])
+    if (Key(Entry.name) === Key('Resource') && !Children.some(File => File.isFile() && Key(File.name) === Key('Resource.hbr'))) return []
     const Files = (await Promise.all(Children.filter(File => File.isFile() && !File.isSymbolicLink() && Extname(File.name).toLowerCase() === '.hbr').map(async File => {
       const FilePath = Join(Path, File.name)
       return await Contained(FilePath) ? { name: File.name, path: FilePath } : null
