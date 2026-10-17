@@ -107,7 +107,7 @@ Describe('local browser HTTP server', () => {
     Document.texts[0].text.background.opacity = 0.25
     Expect((await Call('/api/save', { path: Path, document: Document }, { session: OtherTab })).status).toBe(200)
     Expect(ExistsSync(Join(ProjectDirectory, 'TextProject', Stored.texts[0].asset))).toBe(false)
-    Expect(ReaddirSync(Join(ProjectDirectory, 'TextProject', 'Resource'))).toHaveLength(1)
+    Expect(ReaddirSync(Join(ProjectDirectory, 'TextProject', 'Resource'))).toHaveLength(2)
     Expect((await Call('/api/open', { path: Path })).body.document).toEqual(Document)
     Document.texts[0].text.font.opacity = 2
     const Invalid = await Call('/api/save', { path: Path, document: Document })
@@ -195,7 +195,7 @@ Describe('local browser HTTP server', () => {
     Expect(Saved.images).toEqual(Stored.images)
     Expect(Saved.texts).toHaveLength(2)
     Expect(Saved.texts.find((Item: { id: string }) => Item.id === 'missing-text')).toEqual(Stored.texts[1])
-    Expect(ReaddirSync(ResourceDirectory).sort()).toEqual([Saved.texts[0].asset.split('/').pop(), Saved.images[0].asset.split('/').pop().replace('.png', '.config')].sort())
+    Expect(ReaddirSync(ResourceDirectory).sort()).toEqual([Saved.texts[0].asset.split('/').pop(), ...Saved.texts.map((Item: { asset: string }) => Item.asset.split('/').pop()!.replace('.yaml', '.config')), Saved.images[0].asset.split('/').pop().replace('.png', '.config')].sort())
     Expect(Parse(ReadFileSync(Join(Directory, Saved.texts[0].asset), 'utf8')).content).toBe('清理时保存的修改')
     const Repeated = await Call('/api/cleanup', { path: Path, document: Cleaned.body.document }, { session: OtherTab })
     Expect(Repeated.status).toBe(200)

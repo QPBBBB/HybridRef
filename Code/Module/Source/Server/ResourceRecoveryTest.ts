@@ -91,7 +91,7 @@ Describe('Resource recovery and newline compatibility', () => {
       const Hash = CreateHash('sha256').update(Bytes.toString('utf8').replace(/\n/g, '\r\n')).digest('hex').slice(0, 8).toUpperCase()
       const Reference = Item.asset.replace(/_[A-F0-9]{8}\.yaml$/, `_${Hash}.yaml`)
       WriteFileSync(Join(Root, Reference), Bytes)
-      if (Item.asset.includes('Line_')) WriteFileSync(Join(Root, Reference.replace('.yaml', '.config')), ReadFileSync(Original.replace('.yaml', '.config')))
+      WriteFileSync(Join(Root, Reference.replace('.yaml', '.config')), ReadFileSync(Original.replace('.yaml', '.config')))
       Item.asset = Reference
     }
     WriteFileSync(Path, Stringify(Stored))
@@ -155,7 +155,7 @@ Describe('Resource recovery and newline compatibility', () => {
     for (const Kind of ['images', 'texts', 'arrows']) {
       const Before = Join(Root, Stored[Kind][0].asset), After = Join(Dirname(Copy), Saved[Kind][0].asset)
       Expect(ReadFileSync(After)).toEqual(ReadFileSync(Before))
-      if (Kind !== 'texts') Expect(ReadFileSync(After.replace(/\.(png|yaml)$/, '.config'))).toEqual(ReadFileSync(Before.replace(/\.(png|yaml)$/, '.config')))
+      Expect(ReadFileSync(After.replace(/\.(png|yaml)$/, '.config'))).toEqual(ReadFileSync(Before.replace(/\.(png|yaml)$/, '.config')))
     }
     Expect(ReadFileSync(Path)).toEqual(OriginalProject)
     const Reopened = new ImageStore(), Copied = await Reopened.LoadProject(Copy)

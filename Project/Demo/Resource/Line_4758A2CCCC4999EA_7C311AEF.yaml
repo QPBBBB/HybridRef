@@ -1,0 +1,22 @@
+format: "hybridref-line"
+formatVersion: 1
+arrow:
+  start:
+    x: 0.012896615251085814
+    y: 0.9851564615639097
+  end:
+    x: 0.9871033847489142
+    y: 0.014843538436090356
+  axis: "horizontal"
+  bend: 0.9871033847489142
+  color: "#FFFFFF"
+  thickness: 2
+  dashed: false
+  startBinding:
+    id: "72d2a9bf-c491-4230-9277-220e5c72da29"
+    side: "right"
+    offset: 0.5
+  endBinding:
+    id: "bf4658c9-bb2e-4f24-8aa9-c71f2e45a3e9"
+    side: "bottom"
+    offset: 0.5

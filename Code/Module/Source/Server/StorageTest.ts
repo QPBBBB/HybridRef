@@ -211,7 +211,7 @@ Describe('HybridRef image and text storage', () => {
     Document.arrows = [Arrow]
     await Store.SaveProject(Project, Document)
     const Bytes = ReadFileSync(Project, 'utf8')
-    Expect(Parse(Bytes).formatVersion).toBe(6)
+    Expect(Parse(Bytes).formatVersion).toBe(7)
     const Reference = Parse(Bytes).arrows[0]
     Expect(Object.keys(Reference)).toEqual(['id', 'asset'])
     Expect(Reference.asset).toMatch(/^Resource\/Line_[A-F0-9]{16}_[A-F0-9]{8}\.yaml$/)
@@ -273,7 +273,7 @@ Describe('HybridRef image and text storage', () => {
     Expect(Parse(ReadFileSync(Join(Root, Stored.texts[0].asset), 'utf8')).content).toBe(Source)
   })
 
-  It.each(['中文标题\n第二行  空格\n\t缩进\n\n', '', '   \n\t\r\n', 'emoji 🌄 <script> & # : "quoted"'])('stores text content %j in its own deterministic resource with only a layout reference in hbr', async (Content) => {
+  It.each(['中文标题\n第二行  空格\n\t缩进\n\n', '', '   \n\t\r\n', 'emoji 🌄 <script> & # : "quoted"'])('stores text content %j and layout in resources with only id and asset in hbr', async (Content) => {
     const Root = Temp()
     const Path = Join(Root, '文字 #%25.hbr')
     const Store = new ImageStore()
@@ -285,7 +285,7 @@ Describe('HybridRef image and text storage', () => {
     await Store.SaveProject(Path, Document)
     const Before = ReadFileSync(Path, 'utf8')
     const Stored = Parse(Before)
-    Expect(Object.keys(Stored.texts[0])).toEqual(['id', 'asset', 'x', 'y', 'width', 'height'])
+    Expect(Object.keys(Stored.texts[0])).toEqual(['id', 'asset'])
     Expect(Stored.texts[0].asset).toMatch(/^Resource\/Text_[A-F0-9]{16}_[A-F0-9]{8}\.yaml$/)
     const Resource = ReadFileSync(Join(Root, Stored.texts[0].asset))
     Expect(Parse(Resource.toString('utf8'))).toEqual(Document.texts[0].text)
@@ -298,7 +298,7 @@ Describe('HybridRef image and text storage', () => {
     await Reopened.SaveProject(Path, Loaded.document)
     Expect(ReadFileSync(Path, 'utf8')).toBe(Before)
     Expect(ReadFileSync(Join(Root, Stored.texts[0].asset))).toEqual(Resource)
-    Expect(ReaddirSync(Join(Root, 'Resource'))).toEqual([Basename(Stored.texts[0].asset)])
+    Expect(ReaddirSync(Join(Root, 'Resource')).sort()).toEqual([Basename(Stored.texts[0].asset), Basename(Stored.texts[0].asset).replace('.yaml', '.config')].sort())
   })
 
   It('roundtrips a mixed board and saves it elsewhere entirely from memory', async () => {
@@ -308,7 +308,7 @@ Describe('HybridRef image and text storage', () => {
     const Document = { ...Board(Imported.assets[0].id), texts: TextBoard().texts }
     const Path = Join(Root, 'Mixed.hbr')
     await Store.SaveProject(Path, Document)
-    Expect(ReaddirSync(Join(Root, 'Resource'))).toHaveLength(3)
+    Expect(ReaddirSync(Join(Root, 'Resource'))).toHaveLength(4)
     const Reopened = new ImageStore()
     const Loaded = await Reopened.LoadProject(Path)
     Expect(Loaded.document).toEqual(Document)
@@ -338,7 +338,7 @@ Describe('HybridRef image and text storage', () => {
     Expect(Basename(Second.texts[0].asset).split('_')[1]).toBe(Basename(First.texts[0].asset).split('_')[1])
     Expect(Basename(Second.texts[1].asset).split('_')[1]).not.toBe(Basename(First.texts[0].asset).split('_')[1])
     Expect(ExistsSync(Join(Root, First.texts[0].asset))).toBe(false)
-    Expect(ReaddirSync(Join(Root, 'Resource'))).toHaveLength(2)
+    Expect(ReaddirSync(Join(Root, 'Resource'))).toHaveLength(4)
     Expect((await new ImageStore().LoadProject(Path)).document).toEqual(Document)
   })
 
@@ -359,7 +359,7 @@ Describe('HybridRef image and text storage', () => {
     Expect(Loaded.document).toEqual(Board(Imported.assets[0].id))
     Expect(ReadFileSync(Path, 'utf8')).toBe(Version2)
     await Reopened.SaveProject(Path, Loaded.document)
-    Expect(Parse(ReadFileSync(Path, 'utf8'))).toMatchObject({ formatVersion: 6, texts: [] })
+    Expect(Parse(ReadFileSync(Path, 'utf8'))).toMatchObject({ formatVersion: 7, texts: [] })
   })
 
   It('protects an existing project and immutable text target from conflicting content', async () => {
@@ -371,7 +371,7 @@ Describe('HybridRef image and text storage', () => {
     const Before = ReadFileSync(Path, 'utf8')
     const Resource = Join(Root, Parse(Before).texts[0].asset)
     WriteFileSync(Resource, 'external edit')
-    await Expect(Store.SaveProject(Path, Document)).rejects.toThrow('目标文本资源已损坏')
+    await Expect(Store.SaveProject(Path, Document)).rejects.toThrow('文本资源内容哈希不匹配')
     Expect(ReadFileSync(Path, 'utf8')).toBe(Before)
     Expect(ReadFileSync(Resource, 'utf8')).toBe('external edit')
     Expect((await new ImageStore().LoadProject(Path)).resourceIssues?.[0].message).toContain('文本资源内容哈希不匹配')
@@ -616,7 +616,7 @@ Describe('HybridRef image and text storage', () => {
     const Path = Join(Root, '参考 #% 测试.hbr')
     await Store.SaveProject(Path, Doc)
     const Raw = ReadFileSync(Path, 'utf8')
-    Expect(Raw).toContain('formatVersion: 6')
+    Expect(Raw).toContain('formatVersion: 7')
     Expect(Raw).not.toMatch(/createdAt|updatedAt|boards:|recordings:|data:image/)
     const Filename = Basename(Parse(Raw).images[0].asset)
     Expect(Filename).toMatch(/^Texture_[A-F0-9]{16}_[A-F0-9]{8}\.png$/)

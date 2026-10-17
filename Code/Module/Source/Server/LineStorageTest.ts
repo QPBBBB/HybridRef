@@ -42,7 +42,7 @@ Describe('Line YAML and config storage', () => {
     Expect(Loaded.document).toEqual(Doc)
     Expect(ReadFileSync(Project, 'utf8')).toBe(Original)
     await Store.SaveProject(Project, Loaded.document)
-    Expect(Read(Project).formatVersion).toBe(6)
+    Expect(Read(Project).formatVersion).toBe(7)
     Expect(Object.keys(Read(Project).arrows[0])).toEqual(['id', 'asset'])
     const Files = LineFiles(Project)
     Expect(Basename(Files.Yaml)).toMatch(/^Line_[A-F0-9]{16}_[A-F0-9]{8}\.yaml$/)
