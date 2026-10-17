@@ -21,10 +21,11 @@ export interface BoardArrow { id: string; x: number; y: number; width: number; h
 export type BoardItem = BoardImage | BoardText | BoardArrow
 export interface BoardDocument { format: 'hybridref'; formatVersion: 3 | 4; viewport: Viewport; images: BoardImage[]; texts: BoardText[]; arrows?: BoardArrow[] }
 export interface ImageAsset { id: string; dataUrl: string; width: number; height: number; missing?: boolean }
-export interface LoadedBoard { path: string; document: BoardDocument; assets: ImageAsset[]; missingResources?: string[] }
+export interface ResourceIssue { id: string; asset: string; message: string }
+export interface LoadedBoard { path: string; document: BoardDocument; assets: ImageAsset[]; missingResources?: string[]; resourceIssues?: ResourceIssue[] }
 export interface CleanupResult extends LoadedBoard { removedFiles: number }
 export interface ImportResult { assets: ImageAsset[]; errors: string[] }
-export interface SaveResult { path: string }
+export interface SaveResult { path: string; resourceIssues?: ResourceIssue[] }
 export interface ProjectEntry { name: string; path: string }
 export interface BrowseEntry { name: string; path: string; kind: 'directory' | 'file' }
 export interface BrowseResult { path: string; parent: string | null; entries: BrowseEntry[]; roots: string[] }

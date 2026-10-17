@@ -1,5 +1,5 @@
 import React, { useEffect as UseEffect, useRef as UseRef, useState as UseState } from 'react'
-import { EmptyDocument, EmptyTextResource, TextFontFamily, type BoardDocument, type BoardImage, type BoardText, type BoardArrow, type BoardItem, type ArrowBinding, type ArrowStyle, type TextResource, type ImageAsset, type ImportResult, type LoadedBoard, type ProjectEntry, type Viewport } from '../Shared/Types'
+import { EmptyDocument, EmptyTextResource, TextFontFamily, type BoardDocument, type BoardImage, type BoardText, type BoardArrow, type BoardItem, type ArrowBinding, type ArrowStyle, type TextResource, type ImageAsset, type ImportResult, type LoadedBoard, type ProjectEntry, type ResourceIssue, type Viewport } from '../Shared/Types'
 import { ArrowDrawing, ArrowEndpoints, ConnectionHandles, CreateArrow, DetachTransformedArrows, PositionArrow, ResolveArrowBindings, SnapArrowEndpoint } from '../Shared/Arrows'
 import {
   BoundingBox, CenterImages, FitViewport, Intersects, NormalizeImages, PushImages,
@@ -74,6 +74,7 @@ export default function App(): React.ReactElement {
   const Space = UseRef(false)
   const SpaceFitPending = UseRef(false)
   const [Message, SetMessage] = UseState('')
+  const [ResourceIssues, SetResourceIssues] = UseState<ResourceIssue[]>([])
   const [Working, SetWorking] = UseState(1)
   const WorkingRef = UseRef(1)
   const PendingSaves = UseRef(0)
@@ -170,7 +171,7 @@ export default function App(): React.ReactElement {
       : (CurrentIndex + (InputEvent.key === 'ArrowDown' ? 1 : -1) + Items.length) % Items.length
     Items[NextIndex]?.focus()
   }
-  function Reset(Next: BoardDocument, NextPath: string | null, NextAssets: ImageAsset[], MissingResources: string[] = []): void {
+  function Reset(Next: BoardDocument, NextPath: string | null, NextAssets: ImageAsset[], MissingResources: string[] = [], Issues: ResourceIssue[] = []): void {
     const Arrows = ResolveArrowBindings(BoardItems(Next)).filter((Item): Item is BoardArrow => 'arrow' in Item)
     const FixedFont = { ...Next, arrows: Arrows, texts: Next.texts.map((Item) => ({ ...Item, text: { ...Item.text, font: { ...Item.text.font, family: TextFontFamily } } })) }
     TextEditing.current = null; SetTextEdit(null)
@@ -197,7 +198,8 @@ export default function App(): React.ReactElement {
     CurrentPath.current = NextPath; SetPath(NextPath)
     SavedItems.current = Fingerprint(BoardItems(FixedFont))
     RefreshDirty()
-    SetMessage(MissingResources.length ? `${MissingResources.length} 个资源引用丢失，请手动检查 .hbr 中对应的引用` : '')
+    SetResourceIssues(Issues.length ? Issues : MissingResources.map((Asset) => ({ id: Asset, asset: Asset, message: '资源文件缺失' })))
+    SetMessage('')
   }
   async function NewBoard(): Promise<void> {
     if (WorkingRef.current) return
@@ -208,7 +210,7 @@ export default function App(): React.ReactElement {
     StartWork()
     try {
       const Loaded = await window.HybridRef.NewProject()
-      if (Loaded && Session.current === Revision) Reset(Loaded.document, Loaded.path, Loaded.assets, Loaded.missingResources)
+      if (Loaded && Session.current === Revision) Reset(Loaded.document, Loaded.path, Loaded.assets, Loaded.missingResources, Loaded.resourceIssues)
     }
     catch (CaughtError) { ShowError(CaughtError) }
     finally { EndWork() }
@@ -222,7 +224,7 @@ export default function App(): React.ReactElement {
     StartWork()
     try {
       const Loaded = await window.HybridRef.Open(ProjectPath)
-      if (Loaded && Session.current === Revision) Reset(Loaded.document, Loaded.path, Loaded.assets, Loaded.missingResources)
+      if (Loaded && Session.current === Revision) Reset(Loaded.document, Loaded.path, Loaded.assets, Loaded.missingResources, Loaded.resourceIssues)
     } catch (CaughtError) { ShowError(CaughtError) }
     finally { EndWork() }
   }
@@ -242,6 +244,7 @@ export default function App(): React.ReactElement {
         CurrentPath.current = Result.path; SetPath(Result.path)
         SavedItems.current = Fingerprint(BoardItems(Snapshot))
         RefreshDirty()
+        SetResourceIssues(Result.resourceIssues ?? [])
         SetMessage(DirtyRef.current ? '已保存；还有新的修改未保存' : '已保存')
         return !DirtyRef.current
       } catch (CaughtError) { ShowError(CaughtError); return false }
@@ -273,7 +276,7 @@ export default function App(): React.ReactElement {
         const Result = await window.HybridRef.Cleanup(Snapshot, Destination)
         if (Revision !== Session.current) return
         // Zooming while cleanup runs should not move the user back to an earlier viewport.
-        Reset({ ...Result.document, viewport: Current.current.viewport }, Result.path, Result.assets, Result.missingResources)
+        Reset({ ...Result.document, viewport: Current.current.viewport }, Result.path, Result.assets, Result.missingResources, Result.resourceIssues)
         SetMessage(`已清理 ${Result.removedFiles} 个孤儿资源`)
       } catch (CaughtError) { ShowError(CaughtError) }
       finally { EndWork() }
@@ -707,7 +710,7 @@ export default function App(): React.ReactElement {
   UseEffect(() => {
     const Revision = Session.current
     void window.HybridRef.Startup().then((Loaded: LoadedBoard | null) => {
-      if (Loaded && StartupAllowed.current && Session.current === Revision) Reset(Loaded.document, Loaded.path, Loaded.assets, Loaded.missingResources)
+      if (Loaded && StartupAllowed.current && Session.current === Revision) Reset(Loaded.document, Loaded.path, Loaded.assets, Loaded.missingResources, Loaded.resourceIssues)
     }).catch(ShowError).finally(EndWork)
   }, [])
   UseEffect(() => {
@@ -858,6 +861,11 @@ export default function App(): React.ReactElement {
       <span className="filename" title={Path || undefined}>{Path?.split(/[\\/]/).pop() || '未命名画板'}</span>
       {Working > 0 && <span className="working" role="status">处理中…</span>}
     </header>
+    {ResourceIssues.length > 0 && <details className="resource-issues" data-testid="resource-issues">
+      <summary>{ResourceIssues.length} 个对象的资源无法读取，其他内容已打开</summary>
+      <p>异常文件、引用及布局信息会保留。修复文件后，重新打开项目或执行“清理失效资源”可恢复显示。</p>
+      <ul>{ResourceIssues.map((Issue) => <li key={Issue.id}><strong>{Issue.asset}</strong><span>{Issue.message}</span></li>)}</ul>
+    </details>}
     <div ref={Canvas} data-testid="canvas" className={`canvas${SpaceHeld ? ' can-pan' : ArrowMode ? ' draw-arrow' : ''}`} tabIndex={-1}
       onPointerDown={(InputEvent) => Begin(InputEvent)} onPointerMove={Move} onPointerUp={(InputEvent) => Finish(InputEvent)} onPointerCancel={(InputEvent) => Finish(InputEvent, true)}
       onDoubleClick={DoubleClick}
@@ -865,7 +873,7 @@ export default function App(): React.ReactElement {
       <div className="world" style={{ transform: `translate(${View.x}px, ${View.y}px) scale(${View.zoom})` }}>
         {Document.images.map((Item) => <img key={Item.id} data-testid="image-item" data-image-id={Item.id} data-asset-id={Item.asset} data-x={Item.x} data-y={Item.y} data-width={Item.width} data-height={Item.height}
           className={`board-image${Selected.includes(Item.id) ? ' selected' : ''}${Assets[Item.asset]?.missing ? ' missing' : ''}`} data-missing={Assets[Item.asset]?.missing || undefined}
-          src={Assets[Item.asset]?.dataUrl} alt={Assets[Item.asset]?.missing ? '纹理引用丢失' : '参考图片'} title={Assets[Item.asset]?.missing ? '纹理引用丢失；请手动检查 .hbr 中对应的引用' : undefined} draggable={false}
+          src={Assets[Item.asset]?.dataUrl} alt={Assets[Item.asset]?.missing ? '图片资源无法读取' : '参考图片'} title={Assets[Item.asset]?.missing ? ResourceIssues.find((Issue) => Issue.id === Item.id)?.message ?? '图片资源无法读取' : undefined} draggable={false}
           style={{ left: Item.x, top: Item.y, width: Item.width, height: Item.height, outlineWidth: 1 / View.zoom }} onPointerDown={(InputEvent) => Begin(InputEvent, Item.id)} />)}
         {Document.texts.map((Item) => {
           const Active = TextEdit?.id === Item.id ? TextEdit : null

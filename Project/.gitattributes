@@ -1,0 +1,5 @@
+# Resource filenames contain hashes of their exact bytes.
+# Disable Git newline conversion while keeping YAML diffs readable.
+**/Resource/Text_*.yaml -text
+**/Resource/Line_*.yaml -text
+**/Resource/Texture_*.png -text

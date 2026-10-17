@@ -1,7 +1,7 @@
 import { createServer as CreateServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { mkdir as Mkdir, readFile as ReadFile, readdir as Readdir, realpath as Realpath, rmdir as Rmdir, stat as Stat } from 'node:fs/promises'
 import { basename as Basename, dirname as Dirname, extname as Extname, isAbsolute as IsAbsolute, join as Join, relative as Relative, resolve as Resolve } from 'node:path'
-import { EmptyDocument, type BoardDocument } from '../Shared/Types'
+import { EmptyDocument, type BoardDocument, type SaveResult } from '../Shared/Types'
 import { ImageStore } from './Storage'
 
 type Options = { staticDir: string; projectDirectory: string; buildId?: string }
@@ -235,7 +235,8 @@ export function CreateAppServer(Options: Options): Server {
           throw CaughtError
         }
         const Store = Body.document === undefined ? new ImageStore() : Session.store
-        try { await Store.SaveProject(Target, Body.document === undefined ? EmptyDocument() : Body.document as BoardDocument) }
+        let Saved: SaveResult
+        try { Saved = await Store.SaveProject(Target, Body.document === undefined ? EmptyDocument() : Body.document as BoardDocument) }
         catch (CaughtError) {
           // Remove only our still-empty reservation; never erase a partially
           // written project or anything another process has added to it.
@@ -247,7 +248,7 @@ export function CreateAppServer(Options: Options): Server {
           Session.store = Store
         }
         Session.currentPath = Target
-        return { path: Target }
+        return Saved
       })
     }
     if (Path === '/api/startup' || Path === '/api/open') {
@@ -263,9 +264,9 @@ export function CreateAppServer(Options: Options): Server {
         let Exists = false
         try { await Stat(Target); Exists = true } catch (CaughtError) { if (!IsMissing(CaughtError)) throw CaughtError }
         if (Exists && Key(Target) !== (Session.currentPath ? Key(Session.currentPath) : null) && Body.overwrite !== true) throw new HttpError(409, '文件已存在', 'EXISTS')
-        await Session.store.SaveProject(Target, Body.document as BoardDocument)
+        const Saved = await Session.store.SaveProject(Target, Body.document as BoardDocument)
         Session.currentPath = Target
-        return { path: Target }
+        return Saved
       })
     }
     if (Path === '/api/cleanup') {

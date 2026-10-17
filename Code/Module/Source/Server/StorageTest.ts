@@ -178,7 +178,7 @@ Describe('HybridRef image and text storage', () => {
     Expect(ReadFileSync(Join(Root, 'Resource/Notes.config'), 'utf8')).toBe('keep')
   })
 
-  It.each(['missing', 'invalid', 'no-instance', 'junction'])('rejects %s configs without changing the project or cached board', async (Case) => {
+  It.each(['missing', 'invalid', 'no-instance', 'junction'])('isolates %s configs and still rejects unsafe paths', async (Case) => {
     const Root = Temp(), Store = new ImageStore(), Path = Join(Root, 'Config.hbr')
     const Imported = await Store.ImportBuffers([{ name: 'image.jpg', bytes: await Jpeg() }])
     const Doc = Board(Imported.assets[0].id)
@@ -189,10 +189,17 @@ Describe('HybridRef image and text storage', () => {
     if (Case === 'invalid') WriteFileSync(Config, 'format: invalid')
     if (Case === 'no-instance') WriteFileSync(Config, 'format: hybridref-texture\nformatVersion: 1\ninstances: {}\n')
     if (Case === 'junction') { RmSync(Config); SymlinkSync(Temp(), Config, process.platform === 'win32' ? 'junction' : 'dir') }
-    await Expect(Store.LoadProject(Path)).rejects.toThrow('图片配置')
+    if (Case === 'junction') {
+      await Expect(Store.LoadProject(Path)).rejects.toThrow('图片配置')
+      await Store.SaveProject(Join(Temp(), 'Recovery.hbr'), Doc)
+    } else {
+      const Loaded = await Store.LoadProject(Path)
+      Expect(Loaded.document.images).toEqual([])
+      Expect(Loaded.resourceIssues?.[0].message).toContain('图片配置')
+      await Store.SaveProject(Path, Loaded.document)
+      Expect((await Store.CleanupProject(Path, Loaded.document)).resourceIssues).toHaveLength(1)
+    }
     Expect(ReadFileSync(Path, 'utf8')).toBe(Before)
-    // A failed load retains the original in-memory assets for recovery elsewhere.
-    await Store.SaveProject(Join(Temp(), 'Recovery.hbr'), Doc)
   })
 
   It('saves connector geometry, styles and bindings through reopen, Save As and orphan cleanup', async () => {
@@ -367,7 +374,7 @@ Describe('HybridRef image and text storage', () => {
     await Expect(Store.SaveProject(Path, Document)).rejects.toThrow('目标文本资源已损坏')
     Expect(ReadFileSync(Path, 'utf8')).toBe(Before)
     Expect(ReadFileSync(Resource, 'utf8')).toBe('external edit')
-    await Expect(new ImageStore().LoadProject(Path)).rejects.toThrow('文本资源内容哈希不匹配')
+    Expect((await new ImageStore().LoadProject(Path)).resourceIssues?.[0].message).toContain('文本资源内容哈希不匹配')
   })
 
   It.each(['../outside/', '..\\outside\\', 'C:/outside/', '/outside/', 'local:///outside/', './Resource/'])('rejects unsafe text path prefix %s', async (Prefix) => {
@@ -398,8 +405,10 @@ Describe('HybridRef image and text storage', () => {
     Stored.texts[0].asset = TextName(Malformed)
     WriteFileSync(Join(Root, Stored.texts[0].asset), Malformed)
     WriteFileSync(Path, Stringify(Stored))
-    await Expect(Store.LoadProject(Path)).rejects.toThrow('文字内容')
     await Store.SaveProject(Join(Root, 'KeptImages.hbr'), Board(Imported.assets[0].id))
+    const Loaded = await Store.LoadProject(Path)
+    Expect(Loaded.document.texts).toEqual([])
+    Expect(Loaded.resourceIssues?.[0].message).toContain('文字内容')
     Expect((await new ImageStore().LoadProject(Join(Root, 'KeptImages.hbr'))).assets).toEqual(Imported.assets)
   })
 
@@ -581,7 +590,7 @@ Describe('HybridRef image and text storage', () => {
     Expect(ReaddirSync(Directory)).toEqual([`${Id}.png`])
   })
 
-  It('rejects a short-hash filename that does not match its PNG bytes', async () => {
+  It('reports a short-hash filename that does not match its PNG bytes', async () => {
     const Root = Temp()
     const Filename = TextureName('00000000')
     WriteFileSync(Join(Root, Filename), CollisionPngs[0])
@@ -589,7 +598,9 @@ Describe('HybridRef image and text storage', () => {
     Stored.images[0].asset = Filename
     const Path = Join(Root, 'WrongHash.hbr')
     WriteFileSync(Path, Stringify(Stored))
-    await Expect(new ImageStore().LoadProject(Path)).rejects.toThrow('内容哈希不匹配')
+    const Loaded = await new ImageStore().LoadProject(Path)
+    Expect(Loaded.assets[0].missing).toBe(true)
+    Expect(Loaded.resourceIssues?.[0].message).toContain('内容哈希不匹配')
   })
 
   It('saves literal Chinese/#/% paths, caches bytes after source deletion, and deduplicates image instances', async () => {
@@ -680,7 +691,7 @@ Describe('HybridRef image and text storage', () => {
     Expect(ReaddirSync(Root).some((Name) => Name.endsWith('.tmp'))).toBe(false)
   })
 
-  It('fails damaged resources or absent project loads without discarding the current memory cache', async () => {
+  It('keeps the cache on an absent project and opens damaged resources with warnings', async () => {
     const Root = Temp()
     const Store = new ImageStore()
     const Imported = await Store.ImportBuffers([{ name: 'keep.jpg', bytes: await Jpeg() }])
@@ -692,14 +703,15 @@ Describe('HybridRef image and text storage', () => {
     await Store.SaveProject(Join(Root, 'StillCached.hbr'), Board(Imported.assets[0].id))
     MkdirSync(Join(Root, 'MissingResource'))
     WriteFileSync(Join(Root, Stored.images[0].asset), 'corrupt')
-    await Expect(Store.LoadProject(ProjectPath)).rejects.toThrow('哈希不匹配')
-    await Store.SaveProject(Join(Root, 'StillCached.hbr'), Board(Imported.assets[0].id))
+    const Loaded = await Store.LoadProject(ProjectPath)
+    Expect(Loaded.resourceIssues?.[0].message).toContain('哈希不匹配')
+    Expect(Loaded.assets[0].missing).toBe(true)
     Store.Clear()
     await Expect(Store.SaveProject(Join(Root, 'AfterClear.hbr'), Board(Imported.assets[0].id))).rejects.toThrow('不在内存')
     Expect(ExistsSync(Join(Root, 'AfterClear.hbr'))).toBe(false)
   })
 
-  It('rejects undecodable resources even when their bytes match the filename hash', async () => {
+  It('reports undecodable resources even when their bytes match the filename hash', async () => {
     const Root = Temp()
     const Corrupt = Buffer.from('this is not a PNG')
     const Id = Hash(Corrupt)
@@ -708,7 +720,7 @@ Describe('HybridRef image and text storage', () => {
     Doc.images[0].asset = Filename
     WriteFileSync(Join(Root, Filename), Corrupt)
     WriteFileSync(Join(Root, 'Bad.hbr'), Stringify(Doc))
-    await Expect(new ImageStore().LoadProject(Join(Root, 'Bad.hbr'))).rejects.toThrow('图片资源已损坏')
+    Expect((await new ImageStore().LoadProject(Join(Root, 'Bad.hbr'))).resourceIssues?.[0].message).toContain('图片资源已损坏')
   })
 
   It.each(['../outside/', 'C:/outside/', '/outside/', 'local:///outside/', './Resource/'])('rejects unsafe path prefix %s', async (Prefix) => {

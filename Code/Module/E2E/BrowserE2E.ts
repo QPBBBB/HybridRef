@@ -7,6 +7,8 @@ import { tmpdir as Tmpdir } from 'node:os'
 import Sharp from 'sharp'
 import { parse as Parse, stringify as Stringify } from 'yaml'
 import { EmptyDocument, EmptyTextResource, type BoardArrow, type BoardImage } from '../Source/Shared/Types'
+import { ImageStore } from '../Source/Server/Storage'
+import { CreateArrow } from '../Source/Shared/Arrows'
 
 type ImageLayout = Pick<BoardImage, 'x' | 'y' | 'width' | 'height'>
 
@@ -923,7 +925,7 @@ Test('orphan cleanup preserves missing references and inline edits, and restored
   await Expect(Placeholder).toHaveCSS('object-fit', 'contain')
   Expect((await ReadImageLayout(Page))[1]).toEqual(MissingGeometry)
   await Expect.poll(() => Placeholder.evaluate(Node => (Node as HTMLImageElement).complete && (Node as HTMLImageElement).naturalWidth > 0)).toBe(true)
-  await Expect(Placeholder).toHaveAttribute('alt', '纹理引用丢失')
+  await Expect(Placeholder).toHaveAttribute('alt', '图片资源无法读取')
   await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/MissingResources.png') })
   await Texts.first().dblclick()
   await Page.getByTestId('text-content').fill('清理也保存原位编辑草稿')
@@ -1743,4 +1745,74 @@ Test('arrow strokes do not protrude through the tip in the canvas or copied PNG'
     await Page.keyboard.press('Control+a'); await Page.keyboard.press('Delete')
     await Expect(Arrow).toHaveCount(0)
   }
+})
+
+Test('resource warnings survive save and cleanup while healthy objects remain editable and repaired objects recover', async ({ page: Page }) => {
+  const Directory = Join(ProjectDirectory, 'ResourceRecovery')
+  const Path = Join(Directory, 'ResourceRecovery.hbr'), Store = new ImageStore()
+  const Bytes = await Sharp({ create: { width: 100, height: 70, channels: 3, background: '#497988' } }).png().toBuffer()
+  const Imported = await Store.ImportBuffers([{ name: 'image.png', bytes: Bytes }])
+  const Document = {
+    ...EmptyDocument(),
+    images: [
+      { id: 'image-ok', asset: Imported.assets[0].id, x: 80, y: 80, width: 200, height: 140 },
+      { id: 'image-bad', asset: Imported.assets[0].id, x: 400, y: 80, width: 200, height: 140 },
+    ],
+    texts: [
+      { id: 'text-ok', x: 80, y: 280, width: 300, height: 160, text: EmptyTextResource('正常文字') },
+      { id: 'text-bad', x: 450, y: 280, width: 300, height: 160, text: EmptyTextResource('恢复的文字') },
+    ],
+    arrows: [CreateArrow('line-bad', { x: 80, y: 500 }, { x: 450, y: 540 })],
+  }
+  await Store.SaveProject(Path, Document)
+  const Stored = Parse(await ReadFile(Path, 'utf8'))
+  const TextPath = Join(Directory, Stored.texts[1].asset), LinePath = Join(Directory, Stored.arrows[0].asset)
+  const ConfigPath = Join(Directory, Stored.images[0].asset.replace('.png', '.config'))
+  const Original = await Promise.all([TextPath, LinePath, ConfigPath].map(File => ReadFile(File)))
+  const Config = Parse(Original[2].toString('utf8'))
+  delete Config.instances['image-bad']
+  await WriteFile(ConfigPath, Stringify(Config))
+  await WriteFile(TextPath, Stringify(EmptyTextResource('外部修改未更新哈希')))
+  await WriteFile(LinePath, 'invalid line')
+  const GoodTextPath = Join(Directory, Stored.texts[0].asset)
+  await WriteFile(GoodTextPath, (await ReadFile(GoodTextPath, 'utf8')).replace(/\n/g, '\r\n'))
+  const Damaged = await Promise.all([TextPath, LinePath].map(File => ReadFile(File)))
+  await Page.goto(ServiceUrl)
+  await OpenProject(Page, 'ResourceRecovery')
+  const Warning = Page.getByTestId('resource-issues')
+  await Expect(Warning).toContainText('3 个对象的资源无法读取')
+  await Expect(Page.getByTestId('image-item')).toHaveCount(1)
+  await Expect(Page.getByTestId('text-item')).toHaveCount(1)
+  await Warning.locator('summary').click()
+  await Expect(Warning).toContainText('哈希不匹配')
+  await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/ResourceRecovery.png') })
+  await Page.getByTestId('text-item').dblclick()
+  await Page.getByTestId('text-content').fill('正常内容仍可编辑')
+  await Page.keyboard.press('Control+Enter')
+  await Page.getByTestId('save').click()
+  await Expect(Page.getByTestId('save')).toHaveAttribute('aria-label', '保存')
+  await Expect(Warning).toBeVisible()
+  const [FirstCleanup] = await Promise.all([
+    Page.waitForResponse(Response => Response.url().endsWith('/api/cleanup')),
+    Page.getByTestId('cleanup-resources').click(),
+  ])
+  Expect(FirstCleanup.status()).toBe(200)
+  await Expect(Page.getByTestId('cleanup-resources')).toBeEnabled()
+  await Expect(Warning).toContainText('3 个对象的资源无法读取')
+  Expect(await Promise.all([TextPath, LinePath].map(File => ReadFile(File)))).toEqual(Damaged)
+  const Saved = Parse(await ReadFile(Path, 'utf8'))
+  Expect(Saved.images).toEqual(Stored.images)
+  Expect(Saved.texts[1]).toEqual(Stored.texts[1])
+  Expect(Saved.arrows).toEqual(Stored.arrows)
+  for (const [Index, File] of [TextPath, LinePath, ConfigPath].entries()) await WriteFile(File, Original[Index])
+  const [RecoveredCleanup] = await Promise.all([
+    Page.waitForResponse(Response => Response.url().endsWith('/api/cleanup')),
+    Page.getByTestId('cleanup-resources').click(),
+  ])
+  Expect(RecoveredCleanup.status()).toBe(200)
+  await Expect(Warning).toHaveCount(0)
+  await Expect(Page.getByTestId('image-item')).toHaveCount(2)
+  await Expect(Page.getByTestId('text-item')).toHaveCount(2)
+  await Expect(Page.getByTestId('text-item').first()).toHaveText('正常内容仍可编辑')
+  await Expect(Page.getByTestId('text-item').last()).toHaveText('恢复的文字')
 })

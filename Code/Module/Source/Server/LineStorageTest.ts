@@ -186,7 +186,7 @@ Describe('Line YAML and config storage', () => {
     Expect(ReaddirSync(Join(Root, 'Resource'))).toEqual(['Notes.config'])
   })
 
-  It.each(['missing-config', 'invalid-config', 'missing-instance', 'config-link', 'yaml-link', 'hash', 'path'])('rejects %s without rewriting the project', async (Case) => {
+  It.each(['missing-config', 'invalid-config', 'missing-instance', 'config-link', 'yaml-link', 'hash', 'path'])('isolates %s without rewriting the project and rejects unsafe paths', async (Case) => {
     const Root = Temp(), Project = Join(Root, 'Invalid.hbr'), Store = new ImageStore()
     await Store.SaveProject(Project, Board())
     const Files = LineFiles(Project)
@@ -200,7 +200,15 @@ Describe('Line YAML and config storage', () => {
     if (Case === 'hash') WriteFileSync(Files.Yaml, 'external edit')
     if (Case === 'path') { const Doc = Read(Project); Doc.arrows[0].asset = `../${Basename(Files.Yaml)}`; WriteFileSync(Project, Stringify(Doc)) }
     const Before = ReadFileSync(Project, 'utf8')
-    await Expect(new ImageStore().LoadProject(Project)).rejects.toThrow()
+    const Reopened = new ImageStore()
+    if (['config-link', 'yaml-link', 'path'].includes(Case)) await Expect(Reopened.LoadProject(Project)).rejects.toThrow()
+    else {
+      const Loaded = await Reopened.LoadProject(Project)
+      Expect(Loaded.document.arrows ?? []).toEqual([])
+      Expect(Loaded.resourceIssues).toHaveLength(1)
+      await Reopened.SaveProject(Project, Loaded.document)
+      Expect((await Reopened.CleanupProject(Project, Loaded.document)).resourceIssues).toHaveLength(1)
+    }
     Expect(ReadFileSync(Project, 'utf8')).toBe(Before)
   })
 

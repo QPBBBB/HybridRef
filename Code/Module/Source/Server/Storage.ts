@@ -6,7 +6,7 @@ import { setTimeout as Delay } from 'node:timers/promises'
 import { decode as DecodeBmp } from 'bmp-js'
 import Sharp from 'sharp'
 import { parseDocument as ParseDocument, stringify as Stringify } from 'yaml'
-import type { ArrowBinding, ArrowPoint, ArrowResource, BoardArrow, BoardDocument, BoardImage, BoardText, CleanupResult, ImageAsset, ImportResult, LoadedBoard, TextResource } from '../Shared/Types'
+import type { ArrowBinding, ArrowPoint, ArrowResource, BoardArrow, BoardDocument, BoardImage, BoardText, CleanupResult, ImageAsset, ImportResult, LoadedBoard, ResourceIssue, SaveResult, TextResource } from '../Shared/Types'
 import { MarkdownImageSources, MarkdownLocalImagePath } from '../Shared/Markdown'
 import { DownloadMarkdownImage, MarkdownImageByteLimit } from './MarkdownImages'
 
@@ -35,6 +35,18 @@ function IsRecord(Value: unknown): Value is Record<string, unknown> {
 }
 
 function Digest(Bytes: Buffer): string { return CreateHash('sha256').update(Bytes).digest('hex') }
+// Accept only proven LF/CRLF differences, never arbitrary YAML reformatting.
+function MatchesResource(Bytes: Buffer, Expected: string, Yaml = false): boolean {
+  const Matches = (Value: Buffer) => Digest(Value).slice(0, Expected.length).toUpperCase() === Expected.toUpperCase()
+  if (Matches(Bytes)) return true
+  if (!Yaml) return false
+  const Text = Bytes.toString('utf8')
+  if (!Buffer.from(Text).equals(Bytes)) return false
+  const Normalized = Text.replace(/\r\n/g, '\n')
+  return Matches(Buffer.from(Normalized)) || Matches(Buffer.from(Normalized.replace(/\n/g, '\r\n')))
+}
+class UnsafeResourceError extends Error {}
+function RequireRecoverable(CaughtError: unknown): void { if (CaughtError instanceof UnsafeResourceError) throw CaughtError }
 function ReadableError(CaughtError: unknown): string { return CaughtError instanceof Error ? CaughtError.message : String(CaughtError) }
 function Missing(CaughtError: unknown): boolean { return (CaughtError as NodeJS.ErrnoException)?.code === 'ENOENT' }
 function Rounded(Value: number): number { return Number(Value.toFixed(4)) || 0 }
@@ -220,14 +232,14 @@ function Inside(Parent: string, Child: string): boolean {
 }
 
 async function GuardedResource(ProjectDir: string, Path: string, Label = '图片'): Promise<string> {
-  if (!Inside(Resolve(ProjectDir), Resolve(Path))) throw new Error(`${Label}资源路径越过画板目录：${Path}`)
+  if (!Inside(Resolve(ProjectDir), Resolve(Path))) throw new UnsafeResourceError(`${Label}资源路径越过画板目录：${Path}`)
   let Current = Resolve(ProjectDir)
   for (const Part of Relative(Current, Resolve(Path)).split(/[\\/]/).filter(Boolean)) {
     Current = Join(Current, Part)
-    if ((await Lstat(Current)).isSymbolicLink()) throw new Error(`${Label}资源不可使用符号链接或越过画板目录：${Path}`)
+    if ((await Lstat(Current)).isSymbolicLink()) throw new UnsafeResourceError(`${Label}资源不可使用符号链接或越过画板目录：${Path}`)
   }
   const [Root, FileValue] = await Promise.all([Realpath(ProjectDir), Realpath(Path)])
-  if (!Inside(Root, FileValue)) throw new Error(`${Label}资源路径越过画板目录：${Path}`)
+  if (!Inside(Root, FileValue)) throw new UnsafeResourceError(`${Label}资源路径越过画板目录：${Path}`)
   return FileValue
 }
 
@@ -237,7 +249,7 @@ async function ReadLayout(ProjectDir: string, Item: StoredLine, Configs: Map<str
   let Config = Configs.get(PathKey(Path))
   if (!Config) {
     try { Config = ParseConfig(await ReadFile(await GuardedResource(ProjectDir, Path, Label), 'utf8'), Format) }
-    catch (CaughtError) { throw new Error(`无法读取${Label} ${Reference}：${ReadableError(CaughtError)}`) }
+    catch (CaughtError) { RequireRecoverable(CaughtError); throw new Error(`无法读取${Label} ${Reference}：${ReadableError(CaughtError)}`) }
     Configs.set(PathKey(Path), Config)
   }
   const Layout = Config.instances[Item.id]
@@ -248,10 +260,17 @@ async function ReadLayout(ProjectDir: string, Item: StoredLine, Configs: Map<str
 async function ReadLine(ProjectDir: string, Item: StoredLine): Promise<ArrowResource> {
   const Reference = ValidateRelativeAsset(Item.asset, 'line')
   const Bytes = await ReadFile(await GuardedResource(ProjectDir, Resolve(ProjectDir, Reference), '箭头'))
-  if (LineFilename.exec(Basename(Reference))![2] !== Digest(Bytes).slice(0, 8).toUpperCase()) throw new Error(`箭头资源内容哈希不匹配：${Reference}`)
+  if (!MatchesResource(Bytes, LineFilename.exec(Basename(Reference))![2], true)) throw new Error(`箭头资源内容哈希不匹配：${Reference}`)
   const Value = ParseYaml(Bytes.toString('utf8'), '箭头资源')
   if (!IsRecord(Value) || Value.format !== 'hybridref-line' || Value.formatVersion !== 1) throw new Error(`箭头资源格式无效：${Reference}`)
   return ValidateArrow({ id: Item.id, x: 0, y: 0, width: 1, height: 1, arrow: Value.arrow }, new Set()).arrow
+}
+
+async function ReadText(ProjectDir: string, Item: StoredText): Promise<TextResource> {
+  const Reference = ValidateRelativeAsset(Item.asset, true)
+  const Bytes = await ReadFile(await GuardedResource(ProjectDir, Resolve(ProjectDir, Reference), '文本'))
+  if (!MatchesResource(Bytes, TextFilename.exec(Basename(Reference))![2], true)) throw new Error(`文本资源内容哈希不匹配，文件可能已损坏或被修改：${Reference}`)
+  return ValidateText(ParseYaml(Bytes.toString('utf8'), '文本资源'))
 }
 
 async function AtomicWrite(Path: string, Bytes: Buffer | string, Exclusive = false, Expected?: string): Promise<void> {
@@ -322,6 +341,22 @@ function ProtectMarkdownImages(References: Set<string>, Content: string, Project
   }
 }
 
+async function ProtectStoredTextImages(References: Set<string>, ProjectDir: string, Reference: string, ResourceDir: string): Promise<void> {
+  try {
+    const Text = ParseYaml(await ReadFile(await GuardedResource(ProjectDir, Resolve(ProjectDir, Reference), '文本'), 'utf8'), '文本资源')
+    if (!IsRecord(Text) || typeof Text.content !== 'string') throw new Error('文字内容无效')
+    ProtectMarkdownImages(References, Text.content, ProjectDir)
+  } catch (CaughtError) {
+    RequireRecoverable(CaughtError)
+    if (Missing(CaughtError)) return
+    // An unreadable text may contain the only reference to a local PNG.
+    // Retain candidate images until the text can be inspected again.
+    for (const Entry of await Readdir(ResourceDir, { withFileTypes: true })) {
+      if (Entry.isFile() && !Entry.isSymbolicLink() && Extname(Entry.name).toLowerCase() === '.png') References.add(PathKey(Join(ResourceDir, Entry.name)))
+    }
+  }
+}
+
 /** Only sibling or ancestor projects can legally reference this resource folder:
  * descendants and unrelated project directories would need a forbidden '..'. */
 async function SharedReferences(Target: string, ResourceDir: string): Promise<Set<string>> {
@@ -342,10 +377,7 @@ async function SharedReferences(Target: string, ResourceDir: string): Promise<Se
           const Path = Resolve(Directory, Item.asset.replace(/\\/g, '/'))
           if (Inside(ResourceDir, Path)) References.add(PathKey(Path))
           if (Items === Value.texts) {
-            try {
-              const Text = ParseYaml(await ReadFile(await GuardedResource(Directory, Path, '文本'), 'utf8'), '文本资源')
-              if (IsRecord(Text) && typeof Text.content === 'string') ProtectMarkdownImages(References, Text.content, Directory)
-            } catch (CaughtError) { if (!Missing(CaughtError)) throw CaughtError }
+            await ProtectStoredTextImages(References, Directory, Item.asset, ResourceDir)
           }
         }
       }
@@ -366,6 +398,8 @@ export class ImageStore {
   private LineSources = new Map<string, LineSource>()
   private MissingLineReferences = new Map<string, StoredLine>()
   private MissingTextReferences = new Map<string, StoredText>()
+  private MissingImageReferences = new Map<string, StoredImage>()
+  private ResourceIssues = new Map<string, ResourceIssue>()
   private SourcePath: string | undefined
   private SourceDocument: StoredDocument | undefined
   private ConfigSources = new Map<string, LayoutConfig>()
@@ -384,6 +418,8 @@ export class ImageStore {
     this.LineSources.clear()
     this.MissingLineReferences.clear()
     this.MissingTextReferences.clear()
+    this.MissingImageReferences.clear()
+    this.ResourceIssues.clear()
     this.SourcePath = undefined
     this.SourceDocument = undefined
     this.ConfigSources.clear()
@@ -484,23 +520,29 @@ export class ImageStore {
     const NextLineNames = new Map<string, string>()
     const NextLines = new Map<string, LineSource>()
     const NextMissingLines = new Map<string, StoredLine>()
+    const NextMissingImages = new Map<string, StoredImage>()
+    const Issues = new Map<string, ResourceIssue>()
+    function RecordIssue(Item: StoredLine, CaughtError: unknown): void {
+      RequireRecoverable(CaughtError)
+      Issues.set(Item.id, { id: Item.id, asset: Item.asset, message: Missing(CaughtError) ? '资源文件缺失' : ReadableError(CaughtError) })
+    }
     const Images: BoardImage[] = []
-    const MissingResources: string[] = []
     const LoadedPaths = new Map<string, string>()
     for (const ImageValue of Stored.images) {
       const Reference = ValidateRelativeAsset(ImageValue.asset)
-      const Layout = Stored.formatVersion >= 5 ? await ReadLayout(ProjectDir, ImageValue, NextConfigs) : Geometry(ImageValue)
+      let Layout: ImageGeometry
+      try { Layout = Stored.formatVersion >= 5 ? await ReadLayout(ProjectDir, ImageValue, NextConfigs) : Geometry(ImageValue) }
+      catch (CaughtError) {
+        RecordIssue(ImageValue, CaughtError)
+        NextMissingImages.set(ImageValue.id, ImageValue)
+        continue
+      }
       const Filename = Basename(Reference)
       let Id = LoadedPaths.get(Reference)
       if (!Id) {
         const Source = Resolve(ProjectDir, Reference)
-        let Bytes: Buffer | undefined
-        try { Bytes = await ReadFile(await GuardedResource(ProjectDir, Source)) }
-        catch (CaughtError) {
-          if (!Missing(CaughtError)) throw new Error(`无法读取图片资源 ${Reference}：${ReadableError(CaughtError)}`)
-          MissingResources.push(Reference)
-        }
-        if (Bytes) {
+        try {
+          const Bytes = await ReadFile(await GuardedResource(ProjectDir, Source))
           Id = Digest(Bytes)
           const Matches = ShortFilename.exec(Filename)![2] === Id.slice(0, 8).toUpperCase()
           if (!Matches) throw new Error(`图片资源内容哈希不匹配，文件可能已损坏或被修改：${Reference}`)
@@ -512,7 +554,8 @@ export class ImageStore {
             const { info: Info } = await Sharp(Bytes).raw().toBuffer({ resolveWithObject: true })
             if (!Next.has(Id)) Next.set(Id, { ...Cached(Bytes, Info.width, Info.height), Filename, Source })
           } catch (CaughtError) { throw new Error(`图片资源已损坏 ${Reference}：${ReadableError(CaughtError)}`) }
-        } else {
+        } catch (CaughtError) {
+          RecordIssue(ImageValue, CaughtError)
           // Keep the original reference and geometry. Placeholder bytes never
           // enter a saved texture resource, and each missing path has its own ID.
           Id = Digest(Buffer.from(`missing:${Reference}`))
@@ -523,22 +566,26 @@ export class ImageStore {
         NextTimestampNames.add(ShortFilename.exec(Filename)![1])
         LoadedPaths.set(Reference, Id)
       }
+      if (Next.get(Id)!.asset.missing) {
+        NextMissingImages.set(ImageValue.id, ImageValue)
+        if (!Issues.has(ImageValue.id)) {
+          const Previous = [...Issues.values()].find((Issue) => Issue.asset === Reference)!
+          Issues.set(ImageValue.id, { ...Previous, id: ImageValue.id })
+        }
+      }
       Images.push({ id: ImageValue.id, asset: Id, ...Layout })
     }
     const Texts: BoardText[] = []
     for (const TextValue of Stored.texts) {
       const Reference = ValidateRelativeAsset(TextValue.asset, true)
-      let Bytes: Buffer
-      try { Bytes = await ReadFile(await GuardedResource(ProjectDir, Resolve(ProjectDir, Reference), '文本')) }
+      let Text: TextResource
+      try { Text = await ReadText(ProjectDir, TextValue) }
       catch (CaughtError) {
-        if (!Missing(CaughtError)) throw new Error(`无法读取文本资源 ${Reference}：${ReadableError(CaughtError)}`)
-        MissingResources.push(Reference)
+        RecordIssue(TextValue, CaughtError)
         NextMissingTexts.set(TextValue.id, { ...TextValue, asset: Reference })
         continue
       }
       const Name = TextFilename.exec(Basename(Reference))!
-      if (Name[2] !== Digest(Bytes).slice(0, 8).toUpperCase()) throw new Error(`文本资源内容哈希不匹配，文件可能已损坏或被修改：${Reference}`)
-      const Text = ValidateText(ParseYaml(Bytes.toString('utf8'), '文本资源'))
       Texts.push({ id: TextValue.id, x: TextValue.x, y: TextValue.y, width: TextValue.width, height: TextValue.height, text: Text })
       NextTextNames.set(TextValue.id, Name[1])
       NextTimestampNames.add(Name[1])
@@ -547,14 +594,13 @@ export class ImageStore {
     for (const Item of Stored.arrows ?? []) {
       if (!('asset' in Item)) { Arrows.push(Item); NextLines.set(Item.id, { Value: structuredClone(Item) }); continue }
       let Arrow: ArrowResource
-      try { Arrow = await ReadLine(ProjectDir, Item) }
+      let Layout: ImageGeometry
+      try { Arrow = await ReadLine(ProjectDir, Item); Layout = await ReadLayout(ProjectDir, Item, NextConfigs) }
       catch (CaughtError) {
-        if (!Missing(CaughtError)) throw CaughtError
-        MissingResources.push(Item.asset)
+        RecordIssue(Item, CaughtError)
         NextMissingLines.set(Item.id, Item)
         continue
       }
-      const Layout = await ReadLayout(ProjectDir, Item, NextConfigs)
       const Line = { id: Item.id, ...Layout, arrow: Arrow }
       const Name = LineFilename.exec(Basename(Item.asset))![1]
       NextLineNames.set(Item.id, Name)
@@ -570,12 +616,19 @@ export class ImageStore {
     this.LineSources = NextLines
     this.MissingLineReferences = NextMissingLines
     this.MissingTextReferences = NextMissingTexts
+    this.MissingImageReferences = NextMissingImages
+    this.ResourceIssues = Issues
     this.SourcePath = Target
     this.SourceDocument = SourceDocument
     this.ConfigSources = NextConfigs
     this.TimestampNames = NextTimestampNames
     const { arrows: StoredArrows, ...Document } = Stored
-    return { path: Target, document: { ...Document, formatVersion: Arrows.length ? 4 : 3, images: Images, texts: Texts, ...(Arrows.length ? { arrows: Arrows } : {}) }, assets: [...Next.values()].map((ImageValue) => ({ ...ImageValue.asset })), ...(MissingResources.length ? { missingResources: MissingResources } : {}) }
+    return { path: Target, document: { ...Document, formatVersion: Arrows.length ? 4 : 3, images: Images, texts: Texts, ...(Arrows.length ? { arrows: Arrows } : {}) }, assets: [...Next.values()].map((ImageValue) => ({ ...ImageValue.asset })), ...this.ResourceWarnings() }
+  }
+
+  private ResourceWarnings(): Pick<LoadedBoard, 'missingResources' | 'resourceIssues'> {
+    const Issues = [...this.ResourceIssues.values()]
+    return Issues.length ? { missingResources: [...new Set(Issues.map((Issue) => Issue.asset))], resourceIssues: Issues } : {}
   }
 
   private Snapshot(Doc: BoardDocument): { Document: BoardDocument; Assets: Map<string, CachedImage> } {
@@ -657,9 +710,9 @@ export class ImageStore {
       const PreservedTexts: StoredText[] = []
       for (const Item of Source?.texts ?? []) {
         if (!this.MissingTextReferences.has(Item.id) || Document.texts.some((Text) => Text.id === Item.id)) continue
-        try { await GuardedResource(SourceDir, Resolve(SourceDir, Item.asset), '文本') }
+        try { await ReadText(SourceDir, Item) }
         catch (CaughtError) {
-          if (!Missing(CaughtError)) throw CaughtError
+          RequireRecoverable(CaughtError)
           PreservedTexts.push(SaveAs ? { ...Item, asset: `${ResourceName}/${Basename(Item.asset)}` } : Item)
           continue
         }
@@ -669,9 +722,9 @@ export class ImageStore {
       const PreservedLines: StoredLine[] = []
       for (const Item of SourceLines) {
         if (!this.MissingLineReferences.has(Item.id) || Document.arrows?.some((Line) => Line.id === Item.id)) continue
-        try { await GuardedResource(SourceDir, Resolve(SourceDir, Item.asset), '箭头') }
+        try { await ReadLine(SourceDir, Item); await ReadLayout(SourceDir, Item, new Map()) }
         catch (CaughtError) {
-          if (!Missing(CaughtError)) throw CaughtError
+          RequireRecoverable(CaughtError)
           const Filename = SaveAs && PathKey(SourceDir) === PathKey(ProjectDir)
             ? `Line_${this.AllocateTimestampName()}_${LineFilename.exec(Basename(Item.asset))![2]}.yaml` : Basename(Item.asset)
           PreservedLines.push(SaveAs ? { ...Item, asset: `${ResourceName}/${Filename}` } : Item)
@@ -685,6 +738,13 @@ export class ImageStore {
       await GuardedResource(ProjectDir, ResourceDir)
       const Protected = await SharedReferences(Target, ResourceDir)
       for (const Item of Document.texts) ProtectMarkdownImages(Protected, Item.text.content, ProjectDir)
+      for (const Item of PreservedTexts) await ProtectStoredTextImages(Protected, SourceDir, Source!.texts.find((Text) => Text.id === Item.id)!.asset, ResourceDir)
+      const PreservedImages = (Source?.images ?? []).filter((Item) => this.MissingImageReferences.has(Item.id) && !Document.images.some((Image) => Image.id === Item.id)).map((Item) => {
+        const Filename = SaveAs && PathKey(SourceDir) === PathKey(ProjectDir)
+          ? `Texture_${this.AllocateTimestampName()}_${ShortFilename.exec(Basename(Item.asset))![2]}.png` : Basename(Item.asset)
+        return SaveAs ? { ...Item, asset: `${ResourceName}/${Filename}` } : Item
+      })
+      for (const Item of PreservedImages) Protected.add(PathKey(Resolve(ProjectDir, Item.asset)))
       // A sibling Save As shares Resource/, so give its textures new names to
       // prevent later layout edits from also changing the original project.
       if (SaveAs && PathKey(SourceDir) === PathKey(ProjectDir)) {
@@ -695,8 +755,18 @@ export class ImageStore {
       }
       // Validate all existing targets before writing any resource or the YAML.
       const Resources: ImmutableResource[] = []
+      async function CopyPreserved(Reference: string, Destination: string, Label: string): Promise<void> {
+        if (!SaveAs) return
+        try {
+          const Bytes = await ReadFile(await GuardedResource(SourceDir, Resolve(SourceDir, Reference), Label))
+          Resources.push({ path: Resolve(ProjectDir, Destination), bytes: Bytes, Id: Digest(Bytes), Label })
+        } catch (CaughtError) { if (!Missing(CaughtError)) throw CaughtError }
+      }
       for (const [Id, ImageValue] of Assets) {
-        if (ImageValue.asset.missing) continue
+        if (ImageValue.asset.missing) {
+          await CopyPreserved(ImageValue.Reference!, `${ResourceName}/${ImageValue.Filename}`, '异常图片')
+          continue
+        }
         Resources.push({ path: Join(ResourceDir, ImageValue.Filename), bytes: ImageValue.bytes, Id, Label: '图片' })
       }
       const Texts = Document.texts.map((TextValue): StoredText => {
@@ -747,18 +817,21 @@ export class ImageStore {
       }
       for (const Item of PreservedLines) {
         InsertStoredOrder(Lines, Item, SourceLines)
-        if (SaveAs) {
-          const Original = SourceLines.find((Line) => Line.id === Item.id)!
-          try {
-            const Bytes = await ReadFile(await GuardedResource(SourceDir, Resolve(SourceDir, ConfigPath(Original.asset)), '箭头配置'))
-            ParseConfig(Bytes.toString('utf8'), 'hybridref-line-layout')
-            Resources.push({ path: Resolve(ProjectDir, ConfigPath(Item.asset)), bytes: Bytes, Id: Digest(Bytes), Label: '箭头配置' })
-          } catch (CaughtError) { if (!Missing(CaughtError)) throw CaughtError }
-        }
+        const Original = SourceLines.find((Line) => Line.id === Item.id)!
+        await CopyPreserved(Original.asset, Item.asset, '异常箭头')
+        await CopyPreserved(ConfigPath(Original.asset), ConfigPath(Item.asset), '箭头配置')
       }
       // Text that could not be loaded remains an explicit project reference.
       // Only a manual edit of the latest on-disk YAML removes this hidden entry.
-      for (const Item of PreservedTexts) InsertStoredOrder(Texts, Item, Source!.texts)
+      for (const Item of PreservedTexts) {
+        InsertStoredOrder(Texts, Item, Source!.texts)
+        await CopyPreserved(Source!.texts.find((Text) => Text.id === Item.id)!.asset, Item.asset, '异常文本')
+      }
+      for (const Item of PreservedImages) {
+        const Original = Source!.images.find((Image) => Image.id === Item.id)!
+        await CopyPreserved(Original.asset, Item.asset, '异常图片')
+        await CopyPreserved(ConfigPath(Original.asset), ConfigPath(Item.asset), '图片配置')
+      }
       const Portable: StoredDocument = {
         ...Document, formatVersion: 6,
         images: Document.images.map((ImageValue) => {
@@ -770,12 +843,13 @@ export class ImageStore {
       }
       if (!Lines.length) delete Portable.arrows
       const ConfigItems = [...Portable.images, ...ConfigLines], Layouts = [...Document.images, ...LineLayouts]
+      for (const Item of PreservedImages) InsertStoredOrder(Portable.images, Item, Source!.images)
       const ConfigWrites = await this.PrepareConfigs(ProjectDir, ConfigItems, Layouts, Protected, PreviousConfigPaths)
       const Absent: ImmutableResource[] = []
       for (const Resource of Resources) {
         try {
           const Bytes = await ReadFile(await GuardedResource(ProjectDir, Resource.path, Resource.Label))
-          if (Digest(Bytes) !== Resource.Id) throw new Error(`目标${Resource.Label}资源已损坏，未覆盖：${Resource.path}`)
+          if (!MatchesResource(Bytes, Resource.Id, Extname(Resource.path) === '.yaml')) throw new Error(`目标${Resource.Label}资源已损坏，未覆盖：${Resource.path}`)
         } catch (CaughtError) {
           if (!Missing(CaughtError)) throw CaughtError
           Absent.push(Resource)
@@ -786,7 +860,7 @@ export class ImageStore {
         catch (CaughtError) {
           if ((CaughtError as NodeJS.ErrnoException)?.code !== 'EEXIST') throw CaughtError
           const Bytes = await ReadFile(await GuardedResource(ProjectDir, Resource.path, Resource.Label))
-          if (Digest(Bytes) !== Resource.Id) throw new Error(`目标${Resource.Label}资源已损坏，未覆盖：${Resource.path}`)
+          if (!MatchesResource(Bytes, Resource.Id, Extname(Resource.path) === '.yaml')) throw new Error(`目标${Resource.Label}资源已损坏，未覆盖：${Resource.path}`)
         }
       }
       const Published: ConfigWrite[] = []
@@ -837,11 +911,18 @@ export class ImageStore {
       for (const Id of this.MissingTextReferences.keys()) {
         if (!Portable.texts.some((Item) => Item.id === Id)) this.MissingTextReferences.delete(Id)
       }
+      const StoredItems = [...Portable.images, ...Portable.texts, ...Lines]
+      for (const [Id, Issue] of this.ResourceIssues) {
+        const Item = StoredItems.find((Value) => Value.id === Id)
+        if (Item) this.ResourceIssues.set(Id, { ...Issue, asset: Item.asset })
+        else this.ResourceIssues.delete(Id)
+      }
+      this.MissingImageReferences = new Map(Portable.images.filter((Item) => this.MissingImageReferences.has(Item.id)).map((Item) => [Item.id, Item]))
       for (const Item of [...Portable.images, ...Portable.texts, ...Lines]) Protected.add(PathKey(Resolve(ProjectDir, Item.asset)))
       for (const Path of [...Protected]) if (Path.endsWith('.png') || /^Line_.*\.yaml$/i.test(Basename(Path))) Protected.add(PathKey(ConfigPath(Path)))
       for (const [Id, Asset] of Assets) {
         this.Images.set(Id, Asset)
-        if (Asset.asset.missing) Asset.Reference = Portable.images[Document.images.findIndex((Item) => Item.asset === Id)].asset
+        if (Asset.asset.missing) Asset.Reference = Portable.images.find((Item) => Document.images.some((Image) => Image.id === Item.id && Image.asset === Id))!.asset
         Asset.Source = Resolve(ProjectDir, Asset.asset.missing ? Asset.Reference! : `${ResourceName}/${Asset.Filename}`)
       }
       let RemovedFiles = 0
@@ -860,11 +941,16 @@ export class ImageStore {
       return RemovedFiles
   }
 
-  async SaveProject(Path: string, Doc: BoardDocument): Promise<void> {
+  async SaveProject(Path: string, Doc: BoardDocument): Promise<SaveResult> {
     const { Document, Assets } = this.Snapshot(Doc)
-    const Write = SaveQueue.catch(() => {}).then(async () => { await this.WriteProject(Resolve(Path), Document, Assets) })
-    SaveQueue = Write
-    await Write
+    const Target = Resolve(Path)
+    const Write = SaveQueue.catch(() => {}).then(async (): Promise<SaveResult> => {
+      await this.WriteProject(Target, Document, Assets)
+      const { resourceIssues: Issues } = this.ResourceWarnings()
+      return { path: Target, ...(Issues ? { resourceIssues: Issues } : {}) }
+    })
+    SaveQueue = Write.then(() => {}, () => {})
+    return Write
   }
 
   async CleanupProject(Path: string, Doc: BoardDocument): Promise<CleanupResult> {
@@ -872,76 +958,68 @@ export class ImageStore {
     const Target = Resolve(Path)
     const Write = SaveQueue.catch(() => {}).then(async (): Promise<CleanupResult> => {
       const ProjectDir = Dirname(Target)
-      let Stored: StoredDocument | undefined
-      try { Stored = ParseProject(await ReadFile(Target, 'utf8')) }
+      const Recovery = new ImageStore(this.MissingTexturePath)
+      let Loaded: LoadedBoard | undefined
+      try { Loaded = await Recovery.LoadProject(Target) }
       catch (CaughtError) { if (!Missing(CaughtError)) throw CaughtError }
-      const RestoredAssets = new Map<string, CachedImage>()
-      for (const Item of Stored?.arrows ?? []) {
-        if (!('asset' in Item)) continue
-        let Arrow: ArrowResource
-        try { Arrow = await ReadLine(ProjectDir, Item) }
-        catch (CaughtError) { if (!Missing(CaughtError)) throw CaughtError; continue }
-        if (!this.MissingLineReferences.has(Item.id) || Document.arrows?.some((Line) => Line.id === Item.id)) continue
-        const Layout = await ReadLayout(ProjectDir, Item, this.ConfigSources)
-        const Line = { id: Item.id, ...Layout, arrow: Arrow }
-        InsertStoredOrder(Document.arrows ??= [], Line, Stored!.arrows!)
-        Document.formatVersion = 4
-        this.LineNames.set(Item.id, LineFilename.exec(Basename(Item.asset))![1])
-        this.LineSources.set(Item.id, { Reference: Item.asset, Value: structuredClone(Line) })
-      }
-      for (const [Text, Items] of [[false, Stored?.images ?? []], [true, Stored?.texts ?? []]] as const) {
-        for (const Item of Items) {
-          const Reference = ValidateRelativeAsset(Item.asset, Text)
-          try {
-            const Bytes = await ReadFile(await GuardedResource(ProjectDir, Resolve(ProjectDir, Reference), Text ? '文本' : '图片'))
-            const Pattern = Text ? TextFilename : ShortFilename
-            if (Pattern.exec(Basename(Reference))![2] !== Digest(Bytes).slice(0, 8).toUpperCase()) throw new Error(`资源内容哈希不匹配，文件可能已损坏或被修改：${Reference}`)
-            if (Text && this.MissingTextReferences.has(Item.id) && !Document.texts.some((Value) => Value.id === Item.id)) {
-              const TextValue = ValidateText(ParseYaml(Bytes.toString('utf8'), '文本资源'))
-              const TextItem = Item as StoredText
-              InsertStoredOrder(Document.texts, { id: Item.id, x: TextItem.x, y: TextItem.y, width: TextItem.width, height: TextItem.height, text: TextValue }, Stored!.texts)
-              this.TextNames.set(Item.id, TextFilename.exec(Basename(Reference))![1])
-            }
-          } catch (CaughtError) {
-            if (!Missing(CaughtError)) throw CaughtError
+      const PreviousImages = new Map(this.MissingImageReferences), PreviousTexts = new Map(this.MissingTextReferences)
+      const PreviousLines = new Map(this.MissingLineReferences), PreviousIssues = new Map(this.ResourceIssues)
+      const RecoveredIds = new Set<string>(), RestoredImages = new Map<string, string>()
+      if (Loaded) {
+        const Stored = Recovery.SourceDocument!
+        for (const [Id, Issue] of this.ResourceIssues) {
+          const Remaining = Recovery.ResourceIssues.get(Id)
+          if (Remaining) { this.ResourceIssues.set(Id, Remaining); continue }
+          const Image = Loaded.document.images.find((Item) => Item.id === Id)
+          const Text = Loaded.document.texts.find((Item) => Item.id === Id)
+          const Line = Loaded.document.arrows?.find((Item) => Item.id === Id)
+          if (Image && this.MissingImageReferences.has(Id)) {
+            const Existing = Document.images.find((Item) => Item.id === Id)
+            if (Existing) { RestoredImages.set(Existing.asset, Image.asset); Existing.asset = Image.asset }
+            else InsertStoredOrder(Document.images, Image, Stored.images)
+            const Asset = Recovery.Images.get(Image.asset)!
+            Assets.set(Image.asset, Asset); this.Images.set(Image.asset, Asset)
           }
+          if (Text && this.MissingTextReferences.has(Id)) {
+            if (!Document.texts.some((Item) => Item.id === Id)) InsertStoredOrder(Document.texts, Text, Stored.texts)
+            this.TextNames.set(Id, Recovery.TextNames.get(Id)!)
+          }
+          if (Line && this.MissingLineReferences.has(Id)) {
+            if (!Document.arrows?.some((Item) => Item.id === Id)) InsertStoredOrder(Document.arrows ??= [], Line, Stored.arrows!)
+            Document.formatVersion = 4
+            this.LineNames.set(Id, Recovery.LineNames.get(Id)!)
+            this.LineSources.set(Id, Recovery.LineSources.get(Id)!)
+          }
+          if (Image || Line) {
+            const Key = PathKey(Resolve(ProjectDir, ConfigPath(Issue.asset)))
+            const Config = Recovery.ConfigSources.get(Key)
+            const Base = this.ConfigSources.get(Key)
+            if (Config && !Base) this.ConfigSources.set(Key, Config)
+            else if (Config && Base && !Base.instances[Id]) Base.instances[Id] = Config.instances[Id]
+          }
+          RecoveredIds.add(Id)
         }
       }
-      for (const [Id, Asset] of Assets) {
-        if (!Asset.asset.missing) continue
-        const Reference = Asset.Reference!
-        try {
-          const Source = Resolve(ProjectDir, Reference)
-          const Bytes = await ReadFile(await GuardedResource(ProjectDir, Source))
-          if (ShortFilename.exec(Basename(Reference))![2] !== Digest(Bytes).slice(0, 8).toUpperCase()) throw new Error(`图片资源内容哈希不匹配：${Reference}`)
-          const Metadata = await Sharp(Bytes).metadata()
-          if (Metadata.format !== 'png') throw new Error(`图片资源已损坏：${Reference}`)
-          const { info: Info } = await Sharp(Bytes).raw().toBuffer({ resolveWithObject: true })
-          const Restored = { ...Cached(Bytes, Info.width, Info.height), Filename: Asset.Filename, Source }
-          RestoredAssets.set(Id, Restored)
-        } catch (CaughtError) {
-          if (!Missing(CaughtError)) throw CaughtError
-        }
-      }
-      for (const Item of Document.images) {
-        const Restored = RestoredAssets.get(Item.asset)
-        if (Restored) {
-          Item.asset = Restored.asset.id
-          Assets.set(Item.asset, Restored)
-          this.Images.set(Item.asset, Restored)
-        }
-      }
+      for (const Item of Document.images) Item.asset = RestoredImages.get(Item.asset) ?? Item.asset
       const ReferencedAssets = new Map(Document.images.map((Item) => [Item.asset, Assets.get(Item.asset)!]))
-      const RemovedFiles = await this.WriteProject(Target, Document, ReferencedAssets)
-      for (const Item of Document.texts) this.MissingTextReferences.delete(Item.id)
-      const MissingResources = [...new Set([
-        ...[...ReferencedAssets.values()].filter((Item) => Item.asset.missing).map((Item) => Item.Reference!),
-        ...[...this.MissingTextReferences.values()].map((Item) => Item.asset),
-        ...[...this.MissingLineReferences.values()].map((Item) => Item.asset),
-      ])]
-      return { path: Target, document: Document, assets: [...ReferencedAssets.values()].map((Item) => ({ ...Item.asset })), removedFiles: RemovedFiles, ...(MissingResources.length ? { missingResources: MissingResources } : {}) }
+      let RemovedFiles: number
+      try { RemovedFiles = await this.WriteProject(Target, Document, ReferencedAssets) }
+      catch (CaughtError) {
+        // The UI still has the pre-recovery document if cleanup failed. Retain
+        // its hidden references so a retry cannot delete recovered resources.
+        this.MissingImageReferences = PreviousImages; this.MissingTextReferences = PreviousTexts
+        this.MissingLineReferences = PreviousLines; this.ResourceIssues = PreviousIssues
+        throw CaughtError
+      }
+      for (const Id of RecoveredIds) {
+        this.MissingImageReferences.delete(Id); this.MissingTextReferences.delete(Id)
+        this.MissingLineReferences.delete(Id); this.ResourceIssues.delete(Id)
+      }
+      return { path: Target, document: Document, assets: [...ReferencedAssets.values()].map((Item) => ({ ...Item.asset })), removedFiles: RemovedFiles, ...this.ResourceWarnings() }
     })
-    SaveQueue = Write.then(() => {})
+    // Callers observe Write's rejection; the shared queue itself must always
+    // settle successfully so a failed cleanup cannot crash the HTTP service.
+    SaveQueue = Write.then(() => {}, () => {})
     return Write
   }
 }
