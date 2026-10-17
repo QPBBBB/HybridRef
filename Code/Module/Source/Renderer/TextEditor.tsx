@@ -13,6 +13,7 @@ interface TextEditorProps {
 
 export function TextEditor({ Resource: Draft, OnChange: SetDraft, OnApply, OnSave, OnCancel, OnComposition }: TextEditorProps): React.ReactElement {
   const Composing = UseRef(false)
+  const Opacity = Math.round(Draft.opacity * 100)
 
   function NumberChange(Value: string, Minimum: number, Maximum: number, Apply: (Value: number) => void): void {
     if (!Value.trim()) return
@@ -46,9 +47,14 @@ export function TextEditor({ Resource: Draft, OnChange: SetDraft, OnApply, OnSav
           </div>
         </div>
         <label>文字颜色<input data-testid="text-font-color" type="color" value={Draft.font.color} onChange={(InputEvent) => SetDraft({ ...Draft, font: { ...Draft.font, color: InputEvent.target.value } })} /></label>
-        <label>文字不透明度 %<input data-testid="text-font-opacity" type="number" min={0} max={100} step={1} value={Math.round(Draft.font.opacity * 100)} onChange={(InputEvent) => NumberChange(InputEvent.target.value, 0, 100, (Value) => SetDraft({ ...Draft, font: { ...Draft.font, opacity: Value / 100 } }))} /></label>
         <label>背景颜色<input data-testid="text-background-color" type="color" value={Draft.background.color} onChange={(InputEvent) => SetDraft({ ...Draft, background: { ...Draft.background, color: InputEvent.target.value } })} /></label>
-        <label>背景不透明度 %<input data-testid="text-background-opacity" type="number" min={0} max={100} step={1} value={Math.round(Draft.background.opacity * 100)} onChange={(InputEvent) => NumberChange(InputEvent.target.value, 0, 100, (Value) => SetDraft({ ...Draft, background: { ...Draft.background, opacity: Value / 100 } }))} /></label>
+        <label className="text-opacity-control">不透明度
+          <span className="text-opacity-slider">
+            <input data-testid="text-opacity" type="range" min={0} max={100} step={1} value={Opacity} aria-valuetext={`${Opacity}%`}
+              onChange={(InputEvent) => NumberChange(InputEvent.target.value, 0, 100, (Value) => SetDraft({ ...Draft, opacity: Value / 100 }))} />
+            <span className="text-opacity-value" aria-hidden="true">{Opacity}%</span>
+          </span>
+        </label>
         <label>行高倍数<input data-testid="text-line-height" type="number" min={0.5} max={4} step={0.1} value={Draft.paragraph.lineHeight} onChange={(InputEvent) => NumberChange(InputEvent.target.value, 0.5, 4, (Value) => SetDraft({ ...Draft, paragraph: { ...Draft.paragraph, lineHeight: Value } }))} /></label>
         <label>内边距<input data-testid="text-padding" type="number" min={0} max={128} value={Draft.padding} onChange={(InputEvent) => NumberChange(InputEvent.target.value, 0, 128, (Value) => SetDraft({ ...Draft, padding: Value }))} /></label>
       </div>

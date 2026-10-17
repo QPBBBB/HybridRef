@@ -11,6 +11,19 @@ function PortDirection(Binding?: ArrowBinding): ArrowPoint {
 function ArrowRoute(Arrow: ArrowResource, Start: ArrowPoint, End: ArrowPoint, Bend: number): { points: ArrowPoint[]; handle: ArrowPoint; axis: ArrowResource['axis']; bend: number } {
   const Clearance = Math.max(24, Arrow.thickness * 4)
   const StartDirection = PortDirection(Arrow.startBinding), EndDirection = PortDirection(Arrow.endBinding)
+  if (!Arrow.manualBend && Arrow.startBinding && Arrow.endBinding
+    && StartDirection.x * EndDirection.x + StartDirection.y * EndDirection.y === 0) {
+    const Horizontal = StartDirection.x !== 0
+    const Corner = Horizontal ? { x: End.x, y: Start.y } : { x: Start.x, y: End.y }
+    const Departure = (Corner.x - Start.x) * StartDirection.x + (Corner.y - Start.y) * StartDirection.y
+    const Arrival = (Corner.x - End.x) * EndDirection.x + (Corner.y - End.y) * EndDirection.y
+    // The two outward port rays intersect: one corner respects both directions.
+    // Keep detours for ports facing away and for explicitly dragged middle legs.
+    if (Departure > 1e-8 && Arrival > 1e-8) return {
+      points: [Start, Corner, End], handle: { x: (Corner.x + End.x) / 2, y: (Corner.y + End.y) / 2 },
+      axis: Horizontal ? 'horizontal' : 'vertical', bend: Horizontal ? Corner.x : Corner.y,
+    }
+  }
   const StartLead = { x: Start.x + StartDirection.x * Clearance, y: Start.y + StartDirection.y * Clearance }
   const EndLead = { x: End.x + EndDirection.x * Clearance, y: End.y + EndDirection.y * Clearance }
   let Axis: 'x' | 'y' = Arrow.axis === 'horizontal' ? 'x' : 'y'

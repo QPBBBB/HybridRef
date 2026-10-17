@@ -14,7 +14,7 @@ import { MarkdownPreview } from './MarkdownPreview'
 import { ClearMarkdownImages } from './MarkdownContent'
 import { CreateSelectionSnapshot } from './SelectionSnapshot'
 import { TextInlineInput } from './TextInlineInput'
-import { TextCreateIcon, TextSettingsIcon } from './TextCreateIcon'
+import { TextCreateIcon } from './TextCreateIcon'
 import { ArrowView } from './ArrowView'
 import { ArrowEditor } from './ArrowEditor'
 
@@ -50,6 +50,7 @@ const CenterShortcuts: Partial<Record<string, CenterMode>> = { h: 'horizontal', 
 const NormalizeShortcuts: Partial<Record<string, NormalizeMode>> = { arrowright: 'width', arrowleft: 'height' }
 const ConnectionHandleOffset = 20
 const ConnectionSnapDistance = 14
+const SettingsSize = 24
 
 export default function App(): React.ReactElement {
   const [Document, SetDocument] = UseState<BoardDocument>(EmptyDocument)
@@ -308,6 +309,8 @@ export default function App(): React.ReactElement {
     if (!Active) return true
     const Text = structuredClone(Active.draft)
     Text.font.family = TextFontFamily
+    Text.font.opacity = 1
+    Text.background.opacity = 1
     const Next = BoardItems(Current.current).map((Item) => Item.id === Active.id && 'text' in Item ? { ...Item, text: Text } : Item)
     if (Fingerprint(Next) !== Fingerprint(Active.before)) {
       Past.current.push(Active.before); Future.current = []; SetHistoryVersion((Value) => Value + 1)
@@ -632,8 +635,10 @@ export default function App(): React.ReactElement {
       const Points = ArrowEndpoints(Item)
       const Pointer = ScreenToWorld(Point, Active.viewport)
       let Next: BoardArrow
-      if (Active.kind === 'arrow-bend') Next = PositionArrow(Item, Points.start, Points.end, Item.arrow.axis === 'horizontal' ? Pointer.x : Pointer.y)
-      else {
+      if (Active.kind === 'arrow-bend') {
+        if (Math.hypot(Delta.x, Delta.y) < 2) return
+        Next = PositionArrow({ ...Item, arrow: { ...Item.arrow, manualBend: true } }, Points.start, Points.end, Item.arrow.axis === 'horizontal' ? Pointer.x : Pointer.y)
+      } else {
         const IsStart = Active.kind === 'arrow-start'
         const OtherBinding = IsStart ? Item.arrow.endBinding : Item.arrow.startBinding
         const Endpoint = InputEvent.altKey ? { point: Pointer, binding: undefined } : SnapArrowEndpoint(Pointer, Active.before, ConnectionSnapDistance / Active.viewport.zoom, ConnectionHandleOffset / Active.viewport.zoom, OtherBinding?.id)
@@ -838,8 +843,6 @@ export default function App(): React.ReactElement {
   const ArrowControls = SelectedArrow && ArrowDrawing(SelectedArrow)
   const EditedArrow = Document.arrows?.find((Item) => Item.id === ArrowEditId)
   const View = Document.viewport
-  const SettingsSize = SelectedText ? Math.min(64, Math.max(20, Math.min(SelectedText.width, SelectedText.height) * View.zoom * 0.32)) : 0
-  const ArrowSettingsSize = SelectedArrow ? Math.min(40, Math.max(24, Math.min(SelectedArrow.width, SelectedArrow.height) * View.zoom * 0.32)) : 0
   const SelectionStyle = Bounds ? { left: View.x + Bounds.x * View.zoom, top: View.y + Bounds.y * View.zoom, width: Bounds.width * View.zoom, height: Bounds.height * View.zoom } : undefined
   return <div className="app" data-history-version={HistoryVersion}>
     <header className="toolbar">
@@ -880,10 +883,11 @@ export default function App(): React.ReactElement {
           const Text = Active?.draft ?? Item.text
           return <div key={Item.id} data-testid="text-item" data-text-id={Item.id} data-x={Item.x} data-y={Item.y} data-width={Item.width} data-height={Item.height}
             className={`board-text${Selected.includes(Item.id) ? ' selected' : ''}${Active?.inline ? ' editing' : ''}`} title={Active?.inline ? undefined : '双击编辑 Markdown 源码；拖动角点调整文本框'}
-            style={{ left: Item.x, top: Item.y, width: Item.width, height: Item.height, outlineWidth: 1 / View.zoom,
-              ...TextAppearance(Text) }} onPointerDown={(InputEvent) => Begin(InputEvent, Item.id)}>
-            {Active?.inline ? <TextInlineInput Content={Text.content} OnChange={UpdateTextContent} OnApply={() => CommitText(true)} OnCancel={CancelText}
-              OnSave={(SaveAs) => { void SaveBoard(SaveAs) }} OnComposition={TextComposition} /> : <MarkdownPreview Content={Text.content} ProjectPath={Path} />}
+            style={{ left: Item.x, top: Item.y, width: Item.width, height: Item.height, outlineWidth: 1 / View.zoom }} onPointerDown={(InputEvent) => Begin(InputEvent, Item.id)}>
+            <div className="text-surface" style={TextAppearance(Text)}>
+              {Active?.inline ? <TextInlineInput Content={Text.content} OnChange={UpdateTextContent} OnApply={() => CommitText(true)} OnCancel={CancelText}
+                OnSave={(SaveAs) => { void SaveBoard(SaveAs) }} OnComposition={TextComposition} /> : <MarkdownPreview Content={Text.content} ProjectPath={Path} />}
+            </div>
           </div>
         })}
         {(Document.arrows ?? []).map((Item) => <ArrowView key={Item.id} Item={Item} Zoom={View.zoom} Selected={Selected.includes(Item.id)} OnPointerDown={(InputEvent) => Begin(InputEvent, Item.id)} />)}
@@ -894,11 +898,11 @@ export default function App(): React.ReactElement {
       </div>
       {SelectedText && <button data-testid="text-settings" className="text-settings-button" aria-label="字体设置" title="字体设置" disabled={Working > 0}
         aria-expanded={Boolean(TextEdit?.settings)} style={{ left: View.x + (SelectedText.x + SelectedText.width) * View.zoom + 10, top: View.y + (SelectedText.y + SelectedText.height) * View.zoom - SettingsSize, width: SettingsSize, height: SettingsSize }}
-        onPointerDown={(InputEvent) => { InputEvent.stopPropagation(); InputEvent.preventDefault() }} onDoubleClick={(InputEvent) => InputEvent.stopPropagation()} onClick={() => OpenTextSettings(SelectedText.id)}><TextSettingsIcon /></button>}
+        onPointerDown={(InputEvent) => { InputEvent.stopPropagation(); InputEvent.preventDefault() }} onDoubleClick={(InputEvent) => InputEvent.stopPropagation()} onClick={() => OpenTextSettings(SelectedText.id)}><span className="tool-icon settings-icon" aria-hidden="true" /></button>}
       {TextEdit?.settings && <TextEditor Resource={TextEdit.draft} OnChange={UpdateText} OnApply={() => CommitText(true)} OnSave={(SaveAs) => { void SaveBoard(SaveAs) }} OnCancel={CancelTextSettings} OnComposition={TextComposition} />}
       {SelectedArrow && <button data-testid="arrow-settings" className="text-settings-button arrow-settings-button" aria-label="线条设置" title="线条设置" disabled={Working > 0}
-        aria-expanded={ArrowEditId === SelectedArrow.id} style={{ left: View.x + (SelectedArrow.x + SelectedArrow.width / 2) * View.zoom - ArrowSettingsSize / 2, top: View.y + SelectedArrow.y * View.zoom - ArrowSettingsSize - 10, width: ArrowSettingsSize, height: ArrowSettingsSize }}
-        onPointerDown={(InputEvent) => { InputEvent.stopPropagation(); InputEvent.preventDefault() }} onDoubleClick={(InputEvent) => InputEvent.stopPropagation()} onClick={() => OpenArrowSettings(SelectedArrow.id)}><span className="tool-icon arrow-settings-icon" aria-hidden="true" /></button>}
+        aria-expanded={ArrowEditId === SelectedArrow.id} style={{ left: View.x + (SelectedArrow.x + SelectedArrow.width / 2) * View.zoom - SettingsSize / 2, top: View.y + SelectedArrow.y * View.zoom - SettingsSize - 10, width: SettingsSize, height: SettingsSize }}
+        onPointerDown={(InputEvent) => { InputEvent.stopPropagation(); InputEvent.preventDefault() }} onDoubleClick={(InputEvent) => InputEvent.stopPropagation()} onClick={() => OpenArrowSettings(SelectedArrow.id)}><span className="tool-icon settings-icon" aria-hidden="true" /></button>}
       {EditedArrow && <ArrowEditor Style={EditedArrow.arrow} OnChange={UpdateArrowStyle} OnApply={() => CommitArrow(true)} OnCancel={CancelArrow} OnSave={(SaveAs) => { void SaveBoard(SaveAs) }} />}
       {!Document.images.length && !Document.texts.length && !Document.arrows?.length && <div className="empty"><span>拖入图片，开始整理参考</span><small>Ctrl+V 粘贴截图或文字 · 点击左侧图标添加文本或箭头</small></div>}
       {Bounds && !SelectedArrow && <div data-testid="selection-box" className="selection-box" style={SelectionStyle}>

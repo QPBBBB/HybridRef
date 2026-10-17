@@ -103,6 +103,7 @@ function ValidateText(Value: unknown): TextResource {
   if (Padding < 0) throw new Error('文本内边距不能小于零。')
   return {
     format: 'hybridref-text', formatVersion: 1, content: Value.content,
+    opacity: Value.opacity === undefined ? 1 : RequireOpacity(Value.opacity, '不透明度'),
     font: {
       family: Value.font.family, size: RequireNumber(Value.font.size, '文本字号', true), weight: Value.font.weight,
       color: RequireColor(Value.font.color, '文字颜色'), opacity: RequireOpacity(Value.font.opacity, '文字透明度'),
@@ -130,12 +131,14 @@ function ValidateArrow(Value: unknown, Ids: Set<string>): BoardArrow {
   if (Ids.has(Value.id)) throw new Error(`画板包含重复的对象 ID：${Value.id}`)
   Ids.add(Value.id)
   if (!IsRecord(Value.arrow) || !['horizontal', 'vertical'].includes(String(Value.arrow.axis)) || typeof Value.arrow.dashed !== 'boolean') throw new Error('箭头样式无效。')
+  if (Value.arrow.manualBend !== undefined && typeof Value.arrow.manualBend !== 'boolean') throw new Error('箭头折线调整标记无效。')
   const Thickness = RequireNumber(Value.arrow.thickness, '线宽', true)
   if (Thickness < 1 || Thickness > 24) throw new Error('箭头线宽必须在 1 到 24 之间。')
   const StartBinding = ValidateArrowBinding(Value.arrow.startBinding, Value.id), EndBinding = ValidateArrowBinding(Value.arrow.endBinding, Value.id)
   return { id: Value.id, x: RequireNumber(Value.x, '箭头 x'), y: RequireNumber(Value.y, '箭头 y'), width: RequireNumber(Value.width, '箭头宽度', true), height: RequireNumber(Value.height, '箭头高度', true),
     arrow: { start: ValidateArrowPoint(Value.arrow.start), end: ValidateArrowPoint(Value.arrow.end), axis: Value.arrow.axis as 'horizontal' | 'vertical',
       bend: RequireOpacity(Value.arrow.bend, '折线位置'), color: RequireColor(Value.arrow.color, '线条颜色'), thickness: Thickness, dashed: Value.arrow.dashed,
+      ...(Value.arrow.manualBend !== undefined ? { manualBend: Value.arrow.manualBend as boolean } : {}),
       ...(StartBinding ? { startBinding: StartBinding } : {}), ...(EndBinding ? { endBinding: EndBinding } : {}),
     } }
 }

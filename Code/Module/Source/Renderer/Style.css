@@ -37,6 +37,7 @@ button:disabled { color: #595d64; cursor: default; }
 .board-image.selected, .board-text.selected { outline-style: solid; outline-color: #a7c6ee; }
 .board-text { position: absolute; white-space: pre-wrap; overflow-wrap: anywhere; overflow: hidden; cursor: default; }
 .board-text.editing { cursor: text; user-select: text; }
+.text-surface { width: 100%; height: 100%; }
 .text-inline-input { display: block; width: 100%; height: 100%; min-width: 0; min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 0; outline: none; resize: none; background: transparent; color: inherit; caret-color: #bed9fa; font: inherit; line-height: inherit; text-align: inherit; letter-spacing: inherit; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; cursor: text; scrollbar-width: none; }
 .text-inline-input::selection { background: #79a8df55; }
 .canvas-tools { position: absolute; top: 12px; left: 10px; z-index: 4; display: flex; flex-direction: column; gap: 4px; }
@@ -46,9 +47,8 @@ button:disabled { color: #595d64; cursor: default; }
 .canvas-tool:disabled { opacity: .35; }
 .tool-icon { display: block; width: 100%; height: 100%; pointer-events: none; background-color: currentColor; mask-repeat: no-repeat; mask-position: center; mask-size: contain; }
 .text-create-icon { mask-image: url('../../../Resource/Icons/TextCreate.svg'); }
-.text-settings-icon { mask-image: url('../../../Resource/Icons/TextSettings.svg'); }
 .arrow-create-icon { mask-image: url('../../../Resource/Icons/ArrowCreate.svg'); }
-.arrow-settings-icon { mask-image: url('../../../Resource/Icons/ArrowSettings.png'); }
+.settings-icon { mask-image: url('../../../Resource/Icons/Settings.png'); }
 .canvas-tool[aria-pressed=true] { background: #ffffff26; }
 .canvas.draw-arrow, .canvas.draw-arrow .board-image, .canvas.draw-arrow .board-text, .canvas.draw-arrow .arrow-hit { cursor: crosshair; }
 .board-arrow { position: absolute; display: block; overflow: visible; pointer-events: none; }
@@ -119,7 +119,13 @@ button:disabled { color: #595d64; cursor: default; }
 .text-font-name { display: flex; align-items: center; min-height: 34px; padding: 7px 9px; border: 1px solid #30333b; border-radius: 4px; background: #15171b; color: #b7bdc7; }
 .text-editor input[type=number] { height: 34px; }
 .text-format-row { grid-column: 1 / -1; display: grid; grid-template-columns: 34px 1fr; gap: 12px; }
-.text-align-buttons { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+.text-align-buttons { display: grid; grid-template-columns: repeat(3, 34px); justify-content: end; gap: 5px; }
+.text-align-buttons .text-toggle { width: 34px; padding: 5px; }
+.text-opacity-control { grid-column: 1 / -1; }
+.text-opacity-slider { display: flex; align-items: center; gap: 12px; }
+.text-editor input[type=range] { flex: 1; height: 34px; margin: 0; padding: 0; border: 0; background: transparent; accent-color: #87b7f2; cursor: pointer; }
+.text-editor input[type=range]:focus-visible { outline: 1px solid #87b7f2; outline-offset: 3px; }
+.text-opacity-value { flex: 0 0 4ch; text-align: right; font-variant-numeric: tabular-nums; color: #e1e6ee; }
 .text-toggle { display: grid; place-items: center; height: 34px; padding: 6px; color: #97a9c1; background: #101216; border-color: #3a3d46; }
 .text-toggle[aria-pressed=true], .text-toggle[aria-pressed=true]:hover { color: #c3defe; background: #30455f; border-color: #82afea; }
 .text-bold-icon { mask-image: url('../../../Resource/Icons/TextBold.png'); }

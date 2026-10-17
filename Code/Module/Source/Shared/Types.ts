@@ -4,6 +4,8 @@ export interface TextResource {
   format: 'hybridref-text'
   formatVersion: 1
   content: string
+  opacity: number
+  // Retain the v1 per-color opacity keys for file compatibility; rendering uses opacity above.
   font: { family: string; size: number; weight: 400 | 700; color: string; opacity: number }
   background: { color: string; opacity: number }
   paragraph: { align: 'left' | 'center' | 'right'; lineHeight: number }
@@ -15,6 +17,7 @@ export interface ArrowBinding { id: string; side: 'left' | 'right' | 'top' | 'bo
 export interface ArrowStyle { color: string; thickness: number; dashed: boolean }
 export interface ArrowResource extends ArrowStyle {
   start: ArrowPoint; end: ArrowPoint; axis: 'horizontal' | 'vertical'; bend: number
+  manualBend?: boolean
   startBinding?: ArrowBinding; endBinding?: ArrowBinding
 }
 export interface BoardArrow { id: string; x: number; y: number; width: number; height: number; arrow: ArrowResource }
@@ -42,9 +45,9 @@ export interface HybridRefApi {
 }
 export const TextFontFamily = 'SimHei'
 export const EmptyTextResource = (Content = '文字'): TextResource => ({
-  format: 'hybridref-text', formatVersion: 1, content: Content,
+  format: 'hybridref-text', formatVersion: 1, content: Content, opacity: 1,
   font: { family: TextFontFamily, size: 24, weight: 400, color: '#FFFFFF', opacity: 1 },
-  background: { color: '#202020', opacity: 0.8 },
+  background: { color: '#202020', opacity: 1 },
   paragraph: { align: 'left', lineHeight: 1.5 }, padding: 12,
 })
 export const EmptyDocument = (): BoardDocument => ({ format: 'hybridref', formatVersion: 3, viewport: { x: 0, y: 0, zoom: 1 }, images: [], texts: [] })
