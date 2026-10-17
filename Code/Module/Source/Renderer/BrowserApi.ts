@@ -1,4 +1,4 @@
-import { EmptyDocument, type BrowseResult, type CleanupResult, type HybridRefApi, type ImageAsset, type ImportResult, type LoadedBoard, type ProjectEntry, type SaveResult } from '../Shared/Types'
+import { EmptyDocument, type BrowseResult, type CleanupResult, type HybridRefApi, type ImageAsset, type ImportResult, type LoadedBoard, type ProjectEntry, type SaveResult, type ScanResult } from '../Shared/Types'
 import { RequestFilePath } from './FileDialog'
 
 const LastPath = 'hybridref.lastPath'
@@ -77,6 +77,7 @@ export function CreateBrowserApi(): HybridRefApi {
       Remember(Result.path)
       return Result
     },
+    Scan(Path) { return Post<ScanResult>('scan', { path: Path }) },
     async ImportBytes(Files) {
       const Encoded = Files.map(({ name: Name, bytes: Bytes }) => {
         const Parts: string[] = []

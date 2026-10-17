@@ -87,6 +87,10 @@ export default function App(): React.ReactElement {
   const ProjectControl = UseRef<HTMLDivElement>(null)
   const ProjectPanel = UseRef<HTMLDivElement>(null)
   const OpenButton = UseRef<HTMLButtonElement>(null)
+  const [SettingsMenuOpen, SetSettingsMenuOpen] = UseState(false)
+  const SettingsControl = UseRef<HTMLDivElement>(null)
+  const SettingsPanel = UseRef<HTMLDivElement>(null)
+  const SettingsButton = UseRef<HTMLButtonElement>(null)
   const Session = UseRef(0)
   const StartupAllowed = UseRef(true)
   const InternalClipboard = UseRef<BoardItem[]>([])
@@ -155,24 +159,40 @@ export default function App(): React.ReactElement {
   function ToggleProjectMenu(): void {
     if (WorkingRef.current) return
     if (ProjectMenuOpen) { CloseProjectMenu(true); return }
+    CloseSettingsMenu()
     SetProjectEntries([]); SetProjectsError(''); SetProjectsLoading(true)
     SetProjectMenuOpen(true)
   }
-  function ProjectMenuKeyDown(InputEvent: React.KeyboardEvent): void {
+  function CloseSettingsMenu(RestoreFocus = false): void {
+    SetSettingsMenuOpen(false)
+    if (RestoreFocus) SettingsButton.current?.focus()
+  }
+  function ToggleSettingsMenu(): void {
+    if (WorkingRef.current || Gesture.current) return
+    if (SettingsMenuOpen) { CloseSettingsMenu(true); return }
+    CloseProjectMenu()
+    SpaceFitPending.current = false
+    SetSettingsMenuOpen(true)
+  }
+  function ToolbarMenuKeyDown(InputEvent: React.KeyboardEvent, Kind: 'project' | 'settings'): void {
+    const CloseMenu = Kind === 'project' ? CloseProjectMenu : CloseSettingsMenu
+    const Panel = Kind === 'project' ? ProjectPanel : SettingsPanel
     InputEvent.stopPropagation()
     if (InputEvent.key === 'Escape' || ((InputEvent.ctrlKey || InputEvent.metaKey) && InputEvent.key.toLowerCase() === 'o')) {
-      InputEvent.preventDefault(); CloseProjectMenu(true); return
+      InputEvent.preventDefault(); CloseMenu(true); return
     }
-    if (InputEvent.key === 'Tab') { CloseProjectMenu(true); return }
+    if (InputEvent.key === 'Tab') { CloseMenu(true); return }
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(InputEvent.key)) return
     InputEvent.preventDefault()
-    const Items = Array.from(ProjectPanel.current!.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'))
+    const Items = Array.from(Panel.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])
+    if (!Items.length) return
     const CurrentIndex = Items.indexOf(document.activeElement as HTMLButtonElement)
     const NextIndex = InputEvent.key === 'Home' ? 0 : InputEvent.key === 'End' ? Items.length - 1
       : (CurrentIndex + (InputEvent.key === 'ArrowDown' ? 1 : -1) + Items.length) % Items.length
     Items[NextIndex]?.focus()
   }
   function Reset(Next: BoardDocument, NextPath: string | null, NextAssets: ImageAsset[], MissingResources: string[] = [], Issues: ResourceIssue[] = []): void {
+    CloseSettingsMenu()
     const Arrows = ResolveArrowBindings(BoardItems(Next)).filter((Item): Item is BoardArrow => 'arrow' in Item)
     const FixedFont = { ...Next, arrows: Arrows, texts: Next.texts.map((Item) => ({ ...Item, text: { ...Item.text, font: { ...Item.text.font, family: TextFontFamily } } })) }
     TextEditing.current = null; SetTextEdit(null)
@@ -253,6 +273,23 @@ export default function App(): React.ReactElement {
     })
     SaveQueue.current = Pending
     return Pending
+  }
+
+  async function ScanResources(): Promise<void> {
+    if (TextComposing.current) { AfterComposition.current.push(() => { void ScanResources() }); return }
+    if (WorkingRef.current || Gesture.current || !CurrentPath.current) return
+    CommitText()
+    CloseProjectMenu()
+    if (DirtyRef.current) { SetMessage('请先保存当前修改，再刷新加载 Resource 中的元素。'); return }
+    const Revision = Session.current
+    StartWork()
+    try {
+      const Result = await window.HybridRef.Scan(CurrentPath.current)
+      if (Revision !== Session.current) return
+      Reset({ ...Result.document, viewport: Current.current.viewport }, Result.path, Result.assets, Result.missingResources, Result.resourceIssues)
+      SetMessage(`刷新完成：新增 ${Result.addedElements} 个元素，当前共 ${BoardItems(Result.document).length} 个元素`)
+    } catch (CaughtError) { ShowError(CaughtError) }
+    finally { EndWork() }
   }
 
   function CleanupResources(): Promise<void> {
@@ -752,6 +789,19 @@ export default function App(): React.ReactElement {
     }
   }, [ProjectMenuOpen])
   UseEffect(() => {
+    if (!SettingsMenuOpen) return
+    SettingsPanel.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
+    const Outside = (InputEvent: Event): void => {
+      if (InputEvent.target instanceof Node && !SettingsControl.current?.contains(InputEvent.target)) CloseSettingsMenu()
+    }
+    window.addEventListener('pointerdown', Outside, true)
+    window.addEventListener('focusin', Outside)
+    return () => {
+      window.removeEventListener('pointerdown', Outside, true)
+      window.removeEventListener('focusin', Outside)
+    }
+  }, [SettingsMenuOpen])
+  UseEffect(() => {
     const Element = Canvas.current!
     const Wheel = (InputEvent: WheelEvent) => {
       if (InputEvent.target instanceof HTMLElement && InputEvent.target.closest('.text-editor, .text-inline-input')) return
@@ -783,8 +833,12 @@ export default function App(): React.ReactElement {
         else if (Key === 'escape') { InputEvent.preventDefault(); CancelArrow() }
         return
       }
-      if (ProjectMenuOpen) {
-        if (Key === 'escape' || (Modifier && Key === 'o')) { InputEvent.preventDefault(); CloseProjectMenu(true) }
+      if (ProjectMenuOpen || SettingsMenuOpen) {
+        if (Key === 'escape' || (Modifier && Key === 'o')) {
+          InputEvent.preventDefault()
+          if (SettingsMenuOpen) CloseSettingsMenu(true)
+          else CloseProjectMenu(true)
+        }
         return
       }
       if (InputEvent.code === 'Space') {
@@ -818,15 +872,15 @@ export default function App(): React.ReactElement {
       const FitRequested = Space.current && SpaceFitPending.current
       Space.current = false; SpaceFitPending.current = false; SetSpaceHeld(false)
       // Wait until release to distinguish a tap from the existing Space + drag gesture.
-      if (FitRequested && !EditingText(InputEvent.target) && !TextEditing.current && !ArrowEditing.current && !DrawingArrow.current && !ProjectMenuOpen
+      if (FitRequested && !EditingText(InputEvent.target) && !TextEditing.current && !ArrowEditing.current && !DrawingArrow.current && !ProjectMenuOpen && !SettingsMenuOpen
         && !WorkingRef.current && !Gesture.current && !InputEvent.isComposing
         && !InputEvent.ctrlKey && !InputEvent.metaKey && !InputEvent.altKey && !InputEvent.shiftKey) FitSelection()
     }
     const PointerDown = () => { SpaceFitPending.current = false }
     const Blur = () => { Space.current = false; SpaceFitPending.current = false; SetSpaceHeld(false); Finish(undefined, true) }
-    const Copied = (InputEvent: ClipboardEvent) => { if (!TextEditing.current?.inline && !ProjectMenuOpen && !EditingText(InputEvent.target)) Copy(InputEvent) }
-    const Cut = (InputEvent: ClipboardEvent) => { if (!TextEditing.current && !ProjectMenuOpen && !EditingText(InputEvent.target)) Copy(InputEvent, true) }
-    const Pasted = (InputEvent: ClipboardEvent) => { if (!TextEditing.current && !ProjectMenuOpen && !EditingText(InputEvent.target)) Paste(InputEvent) }
+    const Copied = (InputEvent: ClipboardEvent) => { if (!TextEditing.current?.inline && !ProjectMenuOpen && !SettingsMenuOpen && !EditingText(InputEvent.target)) Copy(InputEvent) }
+    const Cut = (InputEvent: ClipboardEvent) => { if (!TextEditing.current && !ProjectMenuOpen && !SettingsMenuOpen && !EditingText(InputEvent.target)) Copy(InputEvent, true) }
+    const Pasted = (InputEvent: ClipboardEvent) => { if (!TextEditing.current && !ProjectMenuOpen && !SettingsMenuOpen && !EditingText(InputEvent.target)) Paste(InputEvent) }
     window.addEventListener('keydown', Down); window.addEventListener('keyup', Up); window.addEventListener('blur', Blur)
     window.addEventListener('pointerdown', PointerDown, true)
     window.addEventListener('copy', Copied); window.addEventListener('cut', Cut); window.addEventListener('paste', Pasted)
@@ -850,7 +904,7 @@ export default function App(): React.ReactElement {
       <div ref={ProjectControl} className="project-control">
         <button ref={OpenButton} data-testid="open" disabled={Working > 0} title="打开项目 · Ctrl+O" aria-haspopup="menu" aria-expanded={ProjectMenuOpen} aria-controls={ProjectMenuOpen ? 'project-menu' : undefined} onClick={ToggleProjectMenu}
           onKeyDown={(InputEvent) => { if (!ProjectMenuOpen && (InputEvent.key === 'ArrowDown' || InputEvent.key === 'ArrowUp')) { InputEvent.preventDefault(); ToggleProjectMenu() } }}>打开 ▾</button>
-        {ProjectMenuOpen && <div ref={ProjectPanel} id="project-menu" data-testid="project-menu" className="project-menu" role="menu" aria-label="项目" onKeyDown={ProjectMenuKeyDown}>
+        {ProjectMenuOpen && <div ref={ProjectPanel} id="project-menu" data-testid="project-menu" className="project-menu" role="menu" aria-label="项目" onKeyDown={(InputEvent) => ToolbarMenuKeyDown(InputEvent, 'project')}>
           <button data-testid="new" className="project-create" role="menuitem" disabled={Working > 0} onClick={() => void NewBoard()}>+ 新建项目</button>
           <div className="project-menu-list" role="group" aria-label="现有项目">
             {ProjectsLoading ? <p role="status">正在读取项目…</p> : ProjectsError ? <p className="project-menu-error" role="alert">{ProjectsError}</p>
@@ -859,14 +913,21 @@ export default function App(): React.ReactElement {
           </div>
         </div>}
       </div>
-      <button data-testid="save" className="save-button" aria-label={Dirty ? '保存（有未保存的修改）' : '保存'} disabled={Working > PendingSaves.current} title="保存 · Ctrl+S / 另存为 · Ctrl+Shift+S" onClick={() => void SaveBoard()}>保存{Dirty && <span className="save-dirty" aria-hidden="true">*</span>}</button>
-      <button data-testid="cleanup-resources" disabled={Working > 0} title="保存当前画板，并清理资源目录中未被引用的 PNG / YAML 和配置文件" onClick={() => void CleanupResources()}>清理失效资源</button>
+      <button data-testid="save" className="toolbar-icon-button save-button" aria-label={Dirty ? '保存（有未保存的修改）' : '保存'} disabled={Working > PendingSaves.current} title="保存 · Ctrl+S / 另存为 · Ctrl+Shift+S" onClick={() => void SaveBoard()}><span className="tool-icon save-icon" aria-hidden="true" />{Dirty && <span className="save-dirty" aria-hidden="true">*</span>}</button>
+      <button data-testid="scan-resources" className="toolbar-icon-button" aria-label="刷新：扫描加载元素" disabled={Working > 0 || !Path} title={Path ? '刷新：扫描 Resource，加载新增元素与外部修改（请先保存当前编辑）' : '创建或打开项目后，可刷新加载 Resource 中的元素'} onClick={() => void ScanResources()}><span className="tool-icon refresh-icon" aria-hidden="true" /></button>
+      <div ref={SettingsControl} className="settings-control">
+        <button ref={SettingsButton} data-testid="settings" className="toolbar-icon-button" aria-label="设置" title="设置" disabled={Working > 0} aria-haspopup="menu" aria-expanded={SettingsMenuOpen} aria-controls={SettingsMenuOpen ? 'settings-menu' : undefined} onClick={ToggleSettingsMenu}
+          onKeyDown={(InputEvent) => { if (!SettingsMenuOpen && (InputEvent.key === 'ArrowDown' || InputEvent.key === 'ArrowUp')) { InputEvent.preventDefault(); ToggleSettingsMenu() } }}><span className="tool-icon settings-icon" aria-hidden="true" /></button>
+        {SettingsMenuOpen && <div ref={SettingsPanel} id="settings-menu" data-testid="settings-menu" className="project-menu settings-menu" role="menu" aria-label="设置" onKeyDown={(InputEvent) => ToolbarMenuKeyDown(InputEvent, 'settings')}>
+          <button data-testid="cleanup-resources" role="menuitem" disabled={Working > 0} title="保存当前画板，清理本项目已弃用的资源；保留尚未扫描的文件" onClick={() => { CloseSettingsMenu(true); void CleanupResources() }}>清理失效资源</button>
+        </div>}
+      </div>
       <span className="filename" title={Path || undefined}>{Path?.split(/[\\/]/).pop() || '未命名画板'}</span>
       {Working > 0 && <span className="working" role="status">处理中…</span>}
     </header>
     {ResourceIssues.length > 0 && <details className="resource-issues" data-testid="resource-issues">
-      <summary>{ResourceIssues.length} 个对象的资源无法读取，其他内容已打开</summary>
-      <p>异常文件、引用及布局信息会保留。修复文件后，重新打开项目或执行“清理失效资源”可恢复显示。</p>
+      <summary>{ResourceIssues.length} 条资源提示，其他内容已打开</summary>
+      <p>异常文件、引用及布局信息会保留。修复文件或重复 ID 后，点击刷新可重新扫描加载。</p>
       <ul>{ResourceIssues.map((Issue) => <li key={Issue.id}><strong>{Issue.asset}</strong><span>{Issue.message}</span></li>)}</ul>
     </details>}
     <div ref={Canvas} data-testid="canvas" className={`canvas${SpaceHeld ? ' can-pan' : ArrowMode ? ' draw-arrow' : ''}`} tabIndex={-1}

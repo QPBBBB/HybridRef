@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="16 16 480 480" fill="none">
+  <path d="M64 32H384L480 128V448A32 32 0 0 1 448 480H64A32 32 0 0 1 32 448V64A32 32 0 0 1 64 32Z" stroke="currentColor" stroke-width="32" stroke-linejoin="round"/>
+  <path d="M160 32H352V144A32 32 0 0 1 320 176H192A32 32 0 0 1 160 144Z" fill="currentColor"/>
+  <path d="M112 480V352A32 32 0 0 1 144 320H368A32 32 0 0 1 400 352V480" stroke="currentColor" stroke-width="32"/>
+</svg>

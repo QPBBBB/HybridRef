@@ -128,7 +128,7 @@ Describe('Resource recovery and newline compatibility', () => {
     Expect(Saved.texts[0]).toEqual(Stored.texts[0])
     Expect(Saved.arrows[0]).toEqual(Stored.arrows[0])
     Expect(Read(Join(Root, Saved.arrows[1].asset)).arrow.startBinding).toEqual(Document.arrows![1].arrow.startBinding)
-    Expect(ExistsSync(Join(Root, 'Resource/Orphan.yaml'))).toBe(false)
+    Expect(ExistsSync(Join(Root, 'Resource/Orphan.yaml'))).toBe(true)
     for (const [Index, File] of Files.entries()) WriteFileSync(File, Originals[Index])
     const Recovered = await Store.CleanupProject(Path, Cleaned.document)
     Expect(Recovered.resourceIssues).toBeUndefined()

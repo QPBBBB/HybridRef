@@ -9,7 +9,7 @@ type Session = { store: ImageStore; currentPath: string | null; queue: Promise<v
 type Body = Record<string, unknown>
 const BodyLimit = 256 * 1024 * 1024
 const SessionId = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i
-const ApiPaths = new Set(['/api/startup', '/api/open', '/api/save', '/api/import', '/api/browse', '/api/ping', '/api/new', '/api/projects', '/api/cleanup', '/api/markdown-image'])
+const ApiPaths = new Set(['/api/startup', '/api/open', '/api/save', '/api/import', '/api/browse', '/api/ping', '/api/new', '/api/projects', '/api/cleanup', '/api/scan', '/api/markdown-image'])
 const Mime: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml',
@@ -273,6 +273,11 @@ export function CreateAppServer(Options: Options): Server {
       const Target = PathFrom(Body.path)
       if (!Session.currentPath || Key(Target) !== Key(Session.currentPath)) throw new HttpError(400, '只能清理当前已打开的项目。')
       return WithWriteLock(Target, () => Session.store.CleanupProject(Target, Body.document as BoardDocument))
+    }
+    if (Path === '/api/scan') {
+      const Target = PathFrom(Body.path)
+      if (!Session.currentPath || Key(Target) !== Key(Session.currentPath)) throw new HttpError(400, '只能扫描当前已打开的项目。')
+      return WithWriteLock(Target, () => Session.store.ScanProject(Target))
     }
     if (Path === '/api/import') {
       if (!Array.isArray(Body.files)) throw new HttpError(400, '导入请求缺少 files 列表。')

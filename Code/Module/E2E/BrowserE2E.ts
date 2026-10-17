@@ -929,6 +929,7 @@ Test('orphan cleanup preserves missing references and inline edits, and restored
   await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/MissingResources.png') })
   await Texts.first().dblclick()
   await Page.getByTestId('text-content').fill('清理也保存原位编辑草稿')
+  await Page.getByTestId('settings').click()
   await Expect(Page.locator('.toolbar').getByTestId('cleanup-resources')).toBeVisible()
   await Page.getByTestId('cleanup-resources').click()
   await Expect(Page).toHaveTitle('CleanupBoard.hbr — HybridRef')
@@ -945,7 +946,7 @@ Test('orphan cleanup preserves missing references and inline edits, and restored
   Expect(Saved.texts[1]).toEqual({ id: 'missing-text', asset: `Resource/${MissingTextName}` })
   Expect(Parse(await ReadFile(Join(Directory, Saved.texts[0].asset), 'utf8')).content).toBe('清理也保存原位编辑草稿')
   const Referenced = [...Saved.images, ...Saved.texts].map((Item: { asset: string }) => Basename(Item.asset)).sort()
-  Expect((await Readdir(ResourceDirectory)).sort()).toEqual([ImageName, Basename(Saved.texts[0].asset), ...Saved.texts.map((Item: { asset: string }) => Basename(Item.asset).replace('.yaml', '.config')), ImageName.replace('.png', '.config'), MissingImageName.replace('.png', '.config')].sort())
+  Expect((await Readdir(ResourceDirectory)).sort()).toEqual(['Orphan.png', 'Orphan.yaml', ImageName, Basename(Saved.texts[0].asset), ...Saved.texts.map((Item: { asset: string }) => Basename(Item.asset).replace('.yaml', '.config')), ImageName.replace('.png', '.config'), MissingImageName.replace('.png', '.config')].sort())
   Expect(Referenced.every(Name => /^(Texture|Text)_[A-F0-9]{16}_[A-F0-9]{8}\.(png|yaml)$/.test(Name))).toBe(true)
   await Page.reload()
   await Expect(Images).toHaveCount(2)
@@ -953,6 +954,7 @@ Test('orphan cleanup preserves missing references and inline edits, and restored
   await Expect(Texts).toHaveText('清理也保存原位编辑草稿')
   await WriteFile(Join(ResourceDirectory, MissingImageName), MissingImageBytes)
   await WriteFile(Join(ResourceDirectory, MissingTextName), MissingTextBytes)
+  await Page.getByTestId('settings').click()
   await Page.getByTestId('cleanup-resources').click()
   await Expect(Placeholder).toHaveCount(0)
   await Expect(Images).toHaveCount(2)
@@ -960,7 +962,7 @@ Test('orphan cleanup preserves missing references and inline edits, and restored
   Expect((await ReadImageLayout(Page))[1]).toEqual(MissingGeometry)
   const Recovered = Parse(await ReadFile(Path, 'utf8'))
   const RecoveredReferences = [...Recovered.images, ...Recovered.texts].map((Item: { asset: string }) => Basename(Item.asset)).sort()
-  Expect((await Readdir(ResourceDirectory)).sort()).toEqual([...RecoveredReferences, ...Recovered.images.map((Item: { asset: string }) => Basename(Item.asset).replace('.png', '.config'))].sort())
+  Expect((await Readdir(ResourceDirectory)).sort()).toEqual(['Orphan.png', 'Orphan.yaml', ...RecoveredReferences, ...Recovered.images.map((Item: { asset: string }) => Basename(Item.asset).replace('.png', '.config'))].sort())
 })
 
 Test('plain text paste, mixed selection, cut/copy, movement and text frame resizing support undo', async ({ page: Page }) => {
@@ -1303,6 +1305,7 @@ Test('Markdown renders GFM, keeps source editable and saved, and exports the sam
   await Expect(Markdown.locator('h1')).toHaveText('Markdown 参考笔记')
   await Page.keyboard.press('Control+Shift+z')
   await Expect(Markdown.locator('h1')).toHaveText('修改后的 Markdown')
+  await Page.getByTestId('settings').click()
   await Page.getByTestId('cleanup-resources').click()
   await Expect(Page.locator('.message')).toContainText('清理')
   await Expect(Page.getByTestId('open')).toBeEnabled()
@@ -1437,6 +1440,7 @@ Test('arrows support orthogonal drawing, endpoint and bend editing, styles, PNG 
   Expect(Saved.formatVersion).toBe(7)
   Expect(Object.keys(Saved.arrows[0])).toEqual(['id', 'asset'])
   Expect((await ReadSavedArrows(Project))[0].arrow).toMatchObject({ color: '#ff4400', dashed: true, thickness: 4 })
+  await Page.getByTestId('settings').click()
   await Page.getByTestId('cleanup-resources').click()
   await Expect(Page.getByTestId('open')).toBeEnabled()
   await Page.reload()
@@ -1792,7 +1796,7 @@ Test('resource warnings survive save and cleanup while healthy objects remain ed
   await Page.goto(ServiceUrl)
   await OpenProject(Page, 'ResourceRecovery')
   const Warning = Page.getByTestId('resource-issues')
-  await Expect(Warning).toContainText('3 个对象的资源无法读取')
+  await Expect(Warning).toContainText('3 条资源提示')
   await Expect(Page.getByTestId('image-item')).toHaveCount(1)
   await Expect(Page.getByTestId('text-item')).toHaveCount(1)
   await Warning.locator('summary').click()
@@ -1804,19 +1808,21 @@ Test('resource warnings survive save and cleanup while healthy objects remain ed
   await Page.getByTestId('save').click()
   await Expect(Page.getByTestId('save')).toHaveAttribute('aria-label', '保存')
   await Expect(Warning).toBeVisible()
+  await Page.getByTestId('settings').click()
   const [FirstCleanup] = await Promise.all([
     Page.waitForResponse(Response => Response.url().endsWith('/api/cleanup')),
     Page.getByTestId('cleanup-resources').click(),
   ])
   Expect(FirstCleanup.status()).toBe(200)
-  await Expect(Page.getByTestId('cleanup-resources')).toBeEnabled()
-  await Expect(Warning).toContainText('3 个对象的资源无法读取')
+  await Expect(Page.getByTestId('settings')).toBeEnabled()
+  await Expect(Warning).toContainText('3 条资源提示')
   Expect(await Promise.all([TextPath, LinePath].map(File => ReadFile(File)))).toEqual(Damaged)
   const Saved = Parse(await ReadFile(Path, 'utf8'))
   Expect(Saved.images).toEqual(Stored.images)
   Expect(Saved.texts[1]).toEqual(Stored.texts[1])
   Expect(Saved.arrows).toEqual(Stored.arrows)
   for (const [Index, File] of [TextPath, LinePath, ConfigPath].entries()) await WriteFile(File, Original[Index])
+  await Page.getByTestId('settings').click()
   const [RecoveredCleanup] = await Promise.all([
     Page.waitForResponse(Response => Response.url().endsWith('/api/cleanup')),
     Page.getByTestId('cleanup-resources').click(),

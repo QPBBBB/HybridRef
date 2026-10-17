@@ -162,7 +162,7 @@ Describe('HybridRef image and text storage', () => {
     Expect((await new ImageStore().LoadProject(Copy)).document.images[0].x).toBe(400)
   })
 
-  It('prunes orphan texture configs while protecting shared configs and unrelated file types', async () => {
+  It('preserves unindexed texture configs after shared references disappear', async () => {
     const Root = Temp(), Store = new ImageStore(), Path = Join(Root, 'Shared.hbr')
     const Imported = await Store.ImportBuffers([{ name: 'image.jpg', bytes: await Jpeg() }])
     await Store.SaveProject(Path, Board(Imported.assets[0].id))
@@ -173,8 +173,8 @@ Describe('HybridRef image and text storage', () => {
     await Store.SaveProject(Path, Board())
     Expect(ExistsSync(Config)).toBe(true)
     RmSync(Join(Root, 'Other.hbr'))
-    Expect((await Store.CleanupProject(Path, Board())).removedFiles).toBe(2)
-    Expect(ExistsSync(Config)).toBe(false)
+    Expect((await Store.CleanupProject(Path, Board())).removedFiles).toBe(0)
+    Expect(ExistsSync(Config)).toBe(true)
     Expect(ReadFileSync(Join(Root, 'Resource/Notes.config'), 'utf8')).toBe('keep')
   })
 
@@ -822,7 +822,7 @@ Describe('HybridRef image and text storage', () => {
     Expect(ReaddirSync(Join(Root, 'Resource'))).toEqual([Basename(Stored.images[0].asset).replace('.png', '.config')])
   })
 
-  It('restores cached resources deleted after opening while pruning only orphan files and preserving new edits', async () => {
+  It('restores cached resources deleted after opening while preserving unindexed files and new edits', async () => {
     const Root = Temp()
     const Path = Join(Root, 'Clean.hbr')
     const ResourceDir = Join(Root, 'Resource')
@@ -841,7 +841,7 @@ Describe('HybridRef image and text storage', () => {
     Document.images.push({ id: 'fresh', asset: Fresh.assets[0].id, x: 400, y: 20, width: 2, height: 1 })
     Document.texts.push({ id: 'fresh-text', x: 1, y: 2, width: 100, height: 50, text: EmptyTextResource('未保存文本') })
     const Result = await Store.CleanupProject(Path, Document)
-    Expect(Result).toMatchObject({ removedFiles: 2 })
+    Expect(Result).toMatchObject({ removedFiles: 0 })
     Expect(Result).not.toHaveProperty('removedReferences')
     Expect(Result.document.images.map((Item) => Item.id)).toEqual(['image-1', 'fresh'])
     Expect(Result.document.texts.map((Item) => Item.id)).toEqual(['text-1', 'fresh-text'])
@@ -989,7 +989,7 @@ Describe('HybridRef image and text storage', () => {
     Expect(Reloaded.missingResources).toEqual([Saved.images[0].asset, Saved.texts[0].asset])
   })
 
-  It('preserves sibling and ancestor project references while deleting only unreferenced direct assets', async () => {
+  It('preserves sibling and ancestor project resources after they leave the current index', async () => {
     const Root = Temp()
     const Directory = Join(Root, 'Nested')
     const Path = Join(Directory, 'Shared.hbr')
@@ -1008,8 +1008,8 @@ Describe('HybridRef image and text storage', () => {
     RmSync(Join(Directory, 'Sibling.hbr'))
     Expect((await Store.CleanupProject(Path, Document)).removedFiles).toBe(0)
     RmSync(Join(Root, 'Ancestor.hbr'))
-    Expect((await Store.CleanupProject(Path, Document)).removedFiles).toBe(1)
-    Expect(ExistsSync(Join(Directory, Resource))).toBe(false)
+    Expect((await Store.CleanupProject(Path, Document)).removedFiles).toBe(0)
+    Expect(ExistsSync(Join(Directory, Resource))).toBe(true)
   })
 
   It('retains orphan files if a save fails validation and does not follow linked resource directories', async () => {

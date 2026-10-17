@@ -27,6 +27,7 @@ export interface ImageAsset { id: string; dataUrl: string; width: number; height
 export interface ResourceIssue { id: string; asset: string; message: string }
 export interface LoadedBoard { path: string; document: BoardDocument; assets: ImageAsset[]; missingResources?: string[]; resourceIssues?: ResourceIssue[] }
 export interface CleanupResult extends LoadedBoard { removedFiles: number }
+export interface ScanResult extends LoadedBoard { addedElements: number }
 export interface ImportResult { assets: ImageAsset[]; errors: string[] }
 export interface SaveResult { path: string; resourceIssues?: ResourceIssue[] }
 export interface ProjectEntry { name: string; path: string }
@@ -39,6 +40,7 @@ export interface HybridRefApi {
   Open(Path: string): Promise<LoadedBoard>
   Save(Document: BoardDocument, Path: string | null): Promise<SaveResult | null>
   Cleanup(Document: BoardDocument, Path: string): Promise<CleanupResult>
+  Scan(Path: string): Promise<ScanResult>
   ImportBytes(Files: { name: string; bytes: Uint8Array }[]): Promise<ImportResult>
   MarkdownImage(Source: string, ProjectPath: string | null): Promise<ImageAsset>
   SetDirty(Dirty: boolean): void

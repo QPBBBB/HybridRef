@@ -6,7 +6,7 @@ import { setTimeout as Delay } from 'node:timers/promises'
 import { decode as DecodeBmp } from 'bmp-js'
 import Sharp from 'sharp'
 import { parseDocument as ParseDocument, stringify as Stringify } from 'yaml'
-import type { ArrowBinding, ArrowPoint, ArrowResource, BoardArrow, BoardDocument, BoardImage, BoardText, CleanupResult, ImageAsset, ImportResult, LoadedBoard, ResourceIssue, SaveResult, TextResource } from '../Shared/Types'
+import type { ArrowBinding, ArrowPoint, ArrowResource, BoardArrow, BoardDocument, BoardImage, BoardText, CleanupResult, ImageAsset, ImportResult, LoadedBoard, ResourceIssue, SaveResult, ScanResult, TextResource } from '../Shared/Types'
 import { MarkdownImageSources, MarkdownLocalImagePath } from '../Shared/Markdown'
 import { DownloadMarkdownImage, MarkdownImageByteLimit } from './MarkdownImages'
 
@@ -27,6 +27,7 @@ const ShortFilename = /^Texture_([A-F0-9]{16})_([A-F0-9]{8})\.png$/
 const TextId = /^[A-Za-z0-9_-]{1,128}$/
 const TextFilename = /^Text_([A-F0-9]{16})_([A-F0-9]{8})\.yaml$/
 const LineFilename = /^Line_([A-F0-9]{16})_([A-F0-9]{8})\.yaml$/
+const ConfigFilename = /^(Texture|Text|Line)_[A-F0-9]{16}_[A-F0-9]{8}\.config$/
 // All tabs share this queue: publishing one project and pruning its resources
 // must not race another tab's resource writes or project publication.
 let SaveQueue: Promise<void> = Promise.resolve()
@@ -65,7 +66,7 @@ function Geometry(Value: { x?: unknown; y?: unknown; width?: unknown; height?: u
 
 function ConfigPath(Asset: string): string { return Asset.replace(/\.(png|yaml)$/, '.config') }
 function ConfigFormat(Path: string): LayoutConfig['format'] {
-  return Basename(Path).startsWith('Text_') ? 'hybridref-text-layout' : Basename(Path).startsWith('Line_') ? 'hybridref-line-layout' : 'hybridref-texture'
+  return /^Text_/i.test(Basename(Path)) ? 'hybridref-text-layout' : /^Line_/i.test(Basename(Path)) ? 'hybridref-line-layout' : 'hybridref-texture'
 }
 function ConfigLabel(Format: LayoutConfig['format']): string { return Format === 'hybridref-texture' ? '图片' : Format === 'hybridref-text-layout' ? '文本' : '箭头' }
 
@@ -209,6 +210,67 @@ function ParseYaml(Text: string, Label: string): unknown {
 
 function ParseProject(Text: string): StoredDocument { return ValidateDocument(ParseYaml(Text, '画板'), true) }
 function Serialize(Value: unknown): string { return Stringify(Value, { indent: 2, lineWidth: 0, aliasDuplicateObjects: false, defaultKeyType: 'PLAIN', defaultStringType: 'QUOTE_DOUBLE' }) }
+
+function StoredReferences(Document: StoredDocument | undefined): StoredLine[] {
+  return [...Document?.images ?? [], ...Document?.texts ?? [], ...Document?.arrows?.filter((Item): Item is StoredLine => 'asset' in Item) ?? []]
+}
+
+/** Discover instances without changing resource files or dropping unavailable references. */
+async function ScanIndex(Target: string, Stored: StoredDocument): Promise<{ Document: StoredDocument; Issues: ResourceIssue[] }> {
+  const ProjectDir = Dirname(Target), ResourceDir = Join(ProjectDir, 'Resource')
+  const Entries = await Readdir(await GuardedResource(ProjectDir, ResourceDir), { withFileTypes: true })
+  const Names = new Set<string>()
+  const Issues: ResourceIssue[] = []
+  for (const Entry of Entries) {
+    if (ShortFilename.test(Entry.name) || TextFilename.test(Entry.name) || LineFilename.test(Entry.name)) Names.add(Entry.name)
+    else if (ConfigFilename.test(Entry.name)) Names.add(Entry.name.replace(/\.config$/, Entry.name.startsWith('Texture_') ? '.png' : '.yaml'))
+    else if (/^(Texture|Text|Line)_.*\.(png|yaml|config)$/i.test(Entry.name)) Issues.push({ id: `scan:name:${Entry.name}`, asset: `Resource/${Entry.name}`, message: '文件名不符合资源命名规则，已保留但未加载。' })
+  }
+  const Candidates = new Map<string, { Reference: StoredLine; Kind: 'images' | 'texts' | 'arrows' }[]>()
+  const Original = new Map(StoredReferences(Stored).map((Item) => [Item.id, Item]))
+  const OriginalKinds = new Map<string, string>([
+    ...Stored.images.map((Item): [string, string] => [Item.id, 'images']),
+    ...Stored.texts.map((Item): [string, string] => [Item.id, 'texts']),
+    ...(Stored.arrows ?? []).map((Item): [string, string] => [Item.id, 'arrows']),
+  ])
+  const IndexedPaths = new Set([...Original.values()].map((Item) => Item.asset))
+  for (const Name of [...Names].sort()) {
+    const Asset = `Resource/${Name}`
+    const Kind = Name.startsWith('Texture_') ? 'images' : Name.startsWith('Text_') ? 'texts' : 'arrows'
+    try {
+      // Check both paths, including missing resources, before accepting new IDs.
+      try { await GuardedResource(ProjectDir, Resolve(ProjectDir, Asset)) }
+      catch (CaughtError) { if (!Missing(CaughtError)) throw CaughtError }
+      const Config = ParseConfig(await ReadFile(await GuardedResource(ProjectDir, Resolve(ProjectDir, ConfigPath(Asset))), 'utf8'), ConfigFormat(Asset))
+      for (const Id of Object.keys(Config.instances)) {
+        if (!TextId.test(Id)) {
+          Issues.push({ id: `scan:${Asset}:${Id}`, asset: Asset, message: `配置中的对象 ID 无效：${Id}；请使用 1–128 位字母、数字、下划线或连字符。` })
+          continue
+        }
+        const Values = Candidates.get(Id) ?? []
+        Values.push({ Reference: { id: Id, asset: Asset }, Kind })
+        Candidates.set(Id, Values)
+      }
+    } catch (CaughtError) {
+      // Existing references retain their normal per-object diagnostics on load.
+      if (!IndexedPaths.has(Asset)) Issues.push({ id: `scan:${Asset}`, asset: Asset, message: `未加载，文件已保留：${Missing(CaughtError) ? '资源或配套配置缺失' : ReadableError(CaughtError)}` })
+    }
+  }
+  const Document = structuredClone(Stored)
+  for (const [Id, Values] of Candidates) {
+    const Existing = Original.get(Id)
+    const Candidate = Values[0]
+    if (Values.length !== 1 || (Existing && OriginalKinds.get(Id) !== Candidate.Kind)) {
+      Issues.push({ id: `scan:id:${Id}`, asset: Values.map((Value) => Value.Reference.asset).join(' / '), message: `对象 ID ${Id} 重复或类型冲突，保留已有引用；请为每个对象保留唯一的资源/config 配对后重试。` })
+      continue
+    }
+    const Items = Candidate.Kind === 'arrows' ? Document.arrows ??= [] : Document[Candidate.Kind]
+    const Index = Items.findIndex((Item) => Item.id === Id)
+    if (Index >= 0) Items[Index] = Candidate.Reference
+    else Items.push(Candidate.Reference)
+  }
+  return { Document: ValidateDocument(Document, true), Issues }
+}
 
 function InsertStoredOrder<Item extends { id: string }>(Items: Item[], Value: Item, Stored: { id: string }[]): void {
   const Index = Stored.findIndex((Entry) => Entry.id === Value.id)
@@ -407,6 +469,7 @@ export class ImageStore {
   private MissingTextReferences = new Map<string, StoredText>()
   private MissingImageReferences = new Map<string, StoredImage>()
   private ResourceIssues = new Map<string, ResourceIssue>()
+  private ScanIssues: ResourceIssue[] = []
   private SourcePath: string | undefined
   private SourceDocument: StoredDocument | undefined
   private ConfigSources = new Map<string, LayoutConfig>()
@@ -428,6 +491,7 @@ export class ImageStore {
     this.MissingTextReferences.clear()
     this.MissingImageReferences.clear()
     this.ResourceIssues.clear()
+    this.ScanIssues = []
     this.SourcePath = undefined
     this.SourceDocument = undefined
     this.ConfigSources.clear()
@@ -517,6 +581,10 @@ export class ImageStore {
     const Target = Resolve(Path)
     const Revision = ++this.Revision
     const Stored = ParseProject(await ReadFile(Target, 'utf8'))
+    return this.LoadStoredProject(Target, Stored, Revision)
+  }
+
+  private async LoadStoredProject(Target: string, Stored: StoredDocument, Revision = ++this.Revision): Promise<LoadedBoard> {
     const SourceDocument = structuredClone(Stored)
     const ProjectDir = Dirname(Target)
     const Next = new Map<string, CachedImage>()
@@ -634,6 +702,7 @@ export class ImageStore {
     this.MissingTextReferences = NextMissingTexts
     this.MissingImageReferences = NextMissingImages
     this.ResourceIssues = Issues
+    this.ScanIssues = []
     this.SourcePath = Target
     this.SourceDocument = SourceDocument
     this.ConfigSources = NextConfigs
@@ -643,8 +712,48 @@ export class ImageStore {
   }
 
   private ResourceWarnings(): Pick<LoadedBoard, 'missingResources' | 'resourceIssues'> {
-    const Issues = [...this.ResourceIssues.values()]
+    const Issues = [...this.ResourceIssues.values(), ...this.ScanIssues]
     return Issues.length ? { missingResources: [...new Set(Issues.map((Issue) => Issue.asset))], resourceIssues: Issues } : {}
+  }
+
+  async ScanProject(Path: string): Promise<ScanResult> {
+    const Target = Resolve(Path)
+    const Work = SaveQueue.catch(() => {}).then(async (): Promise<ScanResult> => {
+      if (!this.SourcePath || PathKey(Target) !== PathKey(this.SourcePath)) throw new Error('只能扫描当前已打开的项目。')
+      const Before = await ReadFile(Target, 'utf8')
+      const Stored = ParseProject(Before)
+      if (Stored.formatVersion !== 7) throw new Error('请先保存项目，将旧版布局迁移到资源 config 后再刷新。')
+      const { Document, Issues } = await ScanIndex(Target, Stored)
+      // Stage a complete load before publication. A failed scan leaves this
+      // session and its cached images available for further editing/saving.
+      const Staged = new ImageStore(this.MissingTexturePath)
+      const Loaded = await Staged.LoadStoredProject(Target, Document)
+      Staged.ScanIssues = Issues
+      const Output = Serialize(Document)
+      if (Output !== Before) await AtomicWrite(Target, Output, false, Before)
+      else if (await ReadFile(Target, 'utf8') !== Before) throw new Error('项目在扫描过程中被修改，请再次刷新。')
+      this.Revision += 1
+      this.Images = Staged.Images
+      this.FilenameIds = Staged.FilenameIds
+      this.TextNames = Staged.TextNames
+      this.TextSources = Staged.TextSources
+      this.LineNames = Staged.LineNames
+      this.LineSources = Staged.LineSources
+      this.MissingLineReferences = Staged.MissingLineReferences
+      this.MissingTextReferences = Staged.MissingTextReferences
+      this.MissingImageReferences = Staged.MissingImageReferences
+      this.ResourceIssues = Staged.ResourceIssues
+      this.ScanIssues = Staged.ScanIssues
+      this.SourcePath = Staged.SourcePath
+      this.SourceDocument = Staged.SourceDocument
+      this.ConfigSources = Staged.ConfigSources
+      this.TimestampNames = Staged.TimestampNames
+      const PreviousIds = new Set(StoredReferences(Stored).map((Item) => Item.id))
+      const Added = [...Loaded.document.images, ...Loaded.document.texts, ...Loaded.document.arrows ?? []].filter((Item) => !PreviousIds.has(Item.id)).length
+      return { ...Loaded, ...this.ResourceWarnings(), addedElements: Added }
+    })
+    SaveQueue = Work.then(() => {}, () => {})
+    return Work
   }
 
   private Snapshot(Doc: BoardDocument): { Document: BoardDocument; Assets: Map<string, CachedImage> } {
@@ -717,6 +826,14 @@ export class ImageStore {
       const ProjectDir = Dirname(Target)
       const ResourceName = 'Resource'
       const SaveAs = Boolean(this.SourcePath && PathKey(this.SourcePath) !== PathKey(Target))
+      // Only files previously indexed by this destination belong to its cleanup.
+      // An agent may be publishing an entirely new pair between any two saves.
+      const Owned = new Map<string, Set<string>>()
+      for (const Item of [...StoredReferences(Previous), ...(!SaveAs ? StoredReferences(this.SourceDocument) : [])]) {
+        const Key = PathKey(Resolve(ProjectDir, Item.asset))
+        const Ids = Owned.get(Key) ?? new Set<string>()
+        Ids.add(Item.id); Owned.set(Key, Ids)
+      }
       let Source = Previous ?? this.SourceDocument
       const SourceDir = SaveAs ? Dirname(this.SourcePath!) : ProjectDir
       if (SaveAs) {
@@ -979,12 +1096,34 @@ export class ImageStore {
         Asset.Source = Resolve(ProjectDir, Asset.asset.missing ? Asset.Reference! : `${ResourceName}/${Asset.Filename}`)
       }
       let RemovedFiles = 0
-      // Prune only after the project file was atomically published. Keep unknown
-      // file types, subdirectories and links; never recurse into resource data.
-      for (const Entry of await Readdir(ResourceDir, { withFileTypes: true })) {
+      const Entries = await Readdir(ResourceDir, { withFileTypes: true })
+      // New text resources can refer to an older texture before they are scanned.
+      for (const Entry of Entries) {
+        if (!Entry.isFile() || Entry.isSymbolicLink() || !TextFilename.test(Entry.name) || Owned.has(PathKey(Join(ResourceDir, Entry.name)))) continue
+        await ProtectStoredTextImages(Protected, ProjectDir, `${ResourceName}/${Entry.name}`, ResourceDir)
+      }
+      const Removable = new Set<string>()
+      for (const [Resource, Ids] of Owned) {
+        if (Protected.has(Resource)) continue
+        try {
+          const Configuration = await ReadFile(await GuardedResource(ProjectDir, ConfigPath(Resource)), 'utf8').catch((CaughtError: unknown) => { if (!Missing(CaughtError)) throw CaughtError; return undefined })
+          if (Configuration !== undefined) {
+            const Config = ParseConfig(Configuration, ConfigFormat(Resource))
+            const Base = this.ConfigSources.get(PathKey(ConfigPath(Resource)))
+            if (Object.keys(Config.instances).some((Id) => !Ids.has(Id) || (Base && !SameGeometry(Base.instances[Id], Config.instances[Id])))) continue
+          }
+          const Bytes = await ReadFile(await GuardedResource(ProjectDir, Resource)).catch((CaughtError: unknown) => { if (!Missing(CaughtError)) throw CaughtError; return undefined })
+          const Expected = /_([A-F0-9]{8})\.(png|yaml)$/i.exec(Resource)?.[1]
+          if (Bytes && (!Expected || !MatchesResource(Bytes, Expected, Resource.endsWith('.yaml')))) continue
+        } catch { continue } // Keep abnormal or externally changed pairs intact.
+        Removable.add(Resource); Removable.add(PathKey(ConfigPath(Resource)))
+      }
+      // Prune only owned, unchanged resources after project publication. Unknown
+      // files, new instances, incomplete pairs, directories and links survive.
+      for (const Entry of Entries) {
         if (!Entry.isFile() || Entry.isSymbolicLink() || !(['.png', '.yaml'].includes(Extname(Entry.name).toLowerCase()) || /^(Texture|Text|Line)_[A-F0-9]{16}_[A-F0-9]{8}\.config$/.test(Entry.name))) continue
         const Resource = Join(ResourceDir, Entry.name)
-        if (Protected.has(PathKey(Resource))) continue
+        if (Protected.has(PathKey(Resource)) || !Removable.has(PathKey(Resource))) continue
         const Info = await Lstat(Resource).catch((CaughtError: unknown) => { if (!Missing(CaughtError)) throw CaughtError; return null })
         if (!Info?.isFile() || Info.isSymbolicLink()) continue
         await GuardedResource(ProjectDir, Resource)

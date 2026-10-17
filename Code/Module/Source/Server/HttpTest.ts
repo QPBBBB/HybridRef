@@ -134,7 +134,7 @@ Describe('local browser HTTP server', () => {
     Expect((await Call('/api/not-an-api')).status).toBe(404)
   })
 
-  It('cleans orphan files while retaining missing references, live edits and later resource recovery', async () => {
+  It('cleans superseded resources while retaining unindexed files, missing references and live edits', async () => {
     const { call: Call, projectDirectory: ProjectDirectory } = await App()
     const Imported = await Call('/api/import', { files: [{ name: 'missing.jpg', data: await Jpeg() }] })
     const Document: BoardDocument = {
@@ -195,7 +195,7 @@ Describe('local browser HTTP server', () => {
     Expect(Saved.images).toEqual(Stored.images)
     Expect(Saved.texts).toHaveLength(2)
     Expect(Saved.texts.find((Item: { id: string }) => Item.id === 'missing-text')).toEqual(Stored.texts[1])
-    Expect(ReaddirSync(ResourceDirectory).sort()).toEqual([Saved.texts[0].asset.split('/').pop(), ...Saved.texts.map((Item: { asset: string }) => Item.asset.split('/').pop()!.replace('.yaml', '.config')), Saved.images[0].asset.split('/').pop().replace('.png', '.config')].sort())
+    Expect(ReaddirSync(ResourceDirectory).sort()).toEqual(['Orphan.png', 'Orphan.yaml', Saved.texts[0].asset.split('/').pop(), ...Saved.texts.map((Item: { asset: string }) => Item.asset.split('/').pop()!.replace('.yaml', '.config')), Saved.images[0].asset.split('/').pop().replace('.png', '.config')].sort())
     Expect(Parse(ReadFileSync(Join(Directory, Saved.texts[0].asset), 'utf8')).content).toBe('清理时保存的修改')
     const Repeated = await Call('/api/cleanup', { path: Path, document: Cleaned.body.document }, { session: OtherTab })
     Expect(Repeated.status).toBe(200)
