@@ -1,9 +1,9 @@
 format: "hybridref"
 formatVersion: 7
 viewport:
-  x: 190.1731
-  y: 366.1296
-  zoom: 0.3763
+  x: -266.2756
+  y: 430.0956
+  zoom: 0.5902
 images:
   - id: "bf4658c9-bb2e-4f24-8aa9-c71f2e45a3e9"
     asset: "Resource/Texture_0E262CB57B217EA9_9D532DBC.png"
@@ -15,13 +15,15 @@ images:
     asset: "Resource/Texture_A2F04EC1E4FD257B_B472154F.png"
   - id: "941be58b-2f01-4ed4-a62f-4c443ef1dcb5"
     asset: "Resource/Texture_71C8054F0DE79C90_70002B23.png"
+  - id: "66304f7e-7676-4842-b224-c9e34ce54e41"
+    asset: "Resource/Texture_E9490592E768F1CE_5F2C7068.png"
 texts:
   - id: "794b836e-1216-416a-ba28-79aa440b53e4"
-    asset: "Resource/Text_3ECDCA4D79B84B8A_DDE78610.yaml"
+    asset: "Resource/Text_3ECDCA4D79B84B8A_CDA91903.yaml"
   - id: "72d2a9bf-c491-4230-9277-220e5c72da29"
     asset: "Resource/Text_47CE8E69C95BA372_F8B58D63.yaml"
 arrows:
   - id: "166753eb-6165-45d7-ab22-381084d73980"
-    asset: "Resource/Line_651B5828CB38904F_EEF4E10C.yaml"
+    asset: "Resource/Line_651B5828CB38904F_2B842FAF.yaml"
   - id: "64e6cb1b-bb5d-496d-9878-75f96a71a414"
     asset: "Resource/Line_4758A2CCCC4999EA_7C311AEF.yaml"
