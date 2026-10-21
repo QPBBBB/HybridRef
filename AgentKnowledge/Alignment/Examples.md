@@ -9,7 +9,7 @@ B.x = 120 + 360 + 24 = 504
 B.y = 80 + (240 - 160)/2 = 120
 ```
 
-把 B 的 config 改为 x=504、y=120，或调用 `element update` 传入这两个值。此计算已包含在 [Walkthrough.ps1](../Elements/Examples/Walkthrough.ps1) 中，会读取实际元素而不是依赖硬编码布局。后面的直接 YAML 示例另将文本移动 `(24,16)`，最终坐标为 `(528,136)`。
+调用 `element update` 传入 x=504、y=120。此计算已包含在 [Walkthrough.ps1](../Elements/Examples/Walkthrough.ps1) 中，会读取实际元素而不是依赖硬编码布局。后面的 CLI 更新示例另将文本移动 `(24,16)`，最终坐标为 `(528,136)`。
 
 ## 两张图片等宽并保持中心
 

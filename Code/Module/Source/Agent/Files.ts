@@ -5,6 +5,7 @@ import { setTimeout as Delay } from 'node:timers/promises'
 import Sharp from 'sharp'
 import { AtomicWrite, ConfigFormat, ConfigPath, GuardedResource, MatchesResource, ParseConfig, ParseProject, ReadLine, ReadText, ScanIndex, Serialize, type LayoutConfig } from '../Server/Storage'
 import { EmptyDocument, type BoardItem, type BoardImage, type ResourceIssue } from '../Shared/Types'
+import { ConfigRecoveryError, ConfigRecoveryPattern, RewriteLockedConfig } from './LockedConfig'
 
 export type ElementKind = 'image' | 'text' | 'line'
 export interface ElementEntry {
@@ -55,6 +56,9 @@ export async function ReadCatalog(Value: string): Promise<Catalog> {
   }
   const Scanned = await ScanIndex(Path, Index)
   const Issues = [...Scanned.Issues], Entries: ElementEntry[] = [], Ids = new Set<string>()
+  for (const Name of ResourceNames.filter(Name => ConfigRecoveryPattern.test(Name))) {
+    Issues.push({ id: `recovery:${Name}`, asset: `Resource/${Name}`, message: '存在未完成的配置写入恢复记录；已保留原内容与目标内容，请先恢复后再编辑。' })
+  }
   for (const [Kind, Values] of [['image', Scanned.Document.images], ['text', Scanned.Document.texts], ['line', Scanned.Document.arrows ?? []]] as const) {
     for (const Value of Values) {
       if (!('asset' in Value)) continue
@@ -129,7 +133,14 @@ async function PublishFile(Catalog: Catalog, Change: FileChange): Promise<void> 
       await AtomicWrite(Change.Path, Change.After, !Change.Before, Change.Before?.toString('utf8'))
       return
     } catch (CaughtError) {
-      if (Attempt >= 2 || !['EPERM', 'EBUSY'].includes((CaughtError as NodeJS.ErrnoException).code ?? '')) throw CaughtError
+      const Locked = ['EPERM', 'EACCES', 'EBUSY'].includes((CaughtError as NodeJS.ErrnoException).code ?? '')
+      if (!Locked) throw CaughtError
+      if (Attempt >= 2) {
+        if (process.platform !== 'win32' || !Change.Before || !/^(Texture|Text|Line)_[A-F0-9]{16}_[A-F0-9]{8}\.config$/.test(Basename(Change.Path))) throw CaughtError
+        await GuardedResource(Catalog.Directory, Change.Path)
+        await RewriteLockedConfig(Change.Path, Change.Before, Change.After)
+        return
+      }
       await Delay(50 * (Attempt + 1))
     }
   }
@@ -152,10 +163,11 @@ export async function PublishChanges(Catalog: Catalog, Changes: FileChange[]): P
       try {
         await GuardedResource(Catalog.Directory, Change.Path)
         if (!(await ReadFile(Change.Path)).equals(Change.After)) throw new Error('文件已被其他进程修改')
-        if (Change.Before) await AtomicWrite(Change.Path, Change.Before, false, Change.After.toString('utf8'))
+        if (Change.Before) await PublishFile(Catalog, { Path: Change.Path, Before: Change.After, After: Change.Before })
         else await Unlink(Change.Path)
       } catch (RollbackError) { RollbackErrors.push(`${Change.Path}: ${String(RollbackError)}`) }
     }
+    if (CaughtError instanceof ConfigRecoveryError) RollbackErrors.push(CaughtError.message)
     throw new Error(`${String(CaughtError)}${RollbackErrors.length ? `；部分写入无法回滚：${RollbackErrors.join('；')}` : '；本次写入已回滚。'}`)
   }
   return Pending.map((Change) => Change.Path)

@@ -171,6 +171,20 @@ Describe('agent resource commands', () => {
     await Expect(Command(Project, 'element', 'update', { id: 'TextA', x: 240 })).rejects.toThrow()
     Expect(await ReadFile(Config, 'utf8')).toBe(External)
   })
+  It.runIf(process.platform === 'win32')('rolls back a content revision even when the old config keeps denying rename', async () => {
+    const { Project, Source } = await Fixture(); await Seed(Project, Source)
+    const Catalog = await ReadCatalog(Project), Text = Catalog.Entries.find(Entry => Entry.Id === 'TextA')!, Config = Join(Catalog.Directory, Text.Config)
+    const Original = Storage.AtomicWrite, Names = (await Readdir(Join(Catalog.Directory, 'Resource'))).sort()
+    Vi.spyOn(Storage, 'AtomicWrite').mockImplementation(async (...Arguments) => {
+      if (Arguments[0] === Config) throw Object.assign(new Error('persistent sharing violation'), { code: 'EPERM' })
+      if (Arguments[0].endsWith('.config')) throw new Error('injected new config failure')
+      return Original(...Arguments)
+    })
+    await Expect(Command(Project, 'text', 'update', { id: 'TextA', content: 'new revision' })).rejects.toThrow('已回滚')
+    Expect(await ReadFile(Config, 'utf8')).toBe(Text.LayoutText)
+    Expect((await Readdir(Join(Catalog.Directory, 'Resource'))).sort()).toEqual(Names)
+    Expect((await ReadCatalog(Project)).Issues).toEqual([])
+  })
   It('permanently deletes only a verified independent project and respects concurrent command locks', async () => {
     const { Project, Root, Source } = await Fixture(); await Seed(Project, Source)
     await Expect(RunCommand(['project', 'create', '--root', Root, '--name', 'Board'], Repository)).rejects.toThrow()

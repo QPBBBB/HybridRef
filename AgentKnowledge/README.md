@@ -2,6 +2,8 @@
 
 本库面向可以读取本地文件、执行命令的 agent。入口是同目录 `HybridRef.cmd`。使用仓库自带的 Node 和依赖，首次调用或源码改变时自动离线构建 CLI；无需启动浏览器服务。入口可从任意工作目录调用。
 
+常规项目与元素修改统一通过这个入口，包括批量操作。批量脚本只能负责计算参数并循环调用 CLI；不要导入内部实现或另写资源修改脚本。接口出错或能力不足时，先修复或扩展正式 CLI。YAML 文档保留用于理解结构，以及用户明确要求的直接编辑。
+
 ## 先了解工作流程
 
 1. 用户先保存 HybridRef 中的编辑。旧项目先在应用中保存，迁移到第 7 版。
@@ -39,11 +41,11 @@ CLI 路径相对当前工作目录；`--input` 内的 `source` 相对该输入�
 ## 两类知识
 
 - **元素**：[项目](Elements/Projects.md)、[资源结构与直接编辑](Elements/ResourceFormat.md)、[图片](Elements/Images.md)、[文本](Elements/Texts.md)、[连线](Elements/Lines.md)。
-- **对齐**：[坐标](Alignment/Coordinates.md)、[对齐计算](Alignment/Alignment.md)、[尺寸调整](Alignment/Sizing.md)、[数值示例](Alignment/Examples.md)。对齐由 agent 计算，再调用布局修改命令或编辑 config。
+- **对齐**：[坐标](Alignment/Coordinates.md)、[对齐计算](Alignment/Alignment.md)、[尺寸调整](Alignment/Sizing.md)、[数值示例](Alignment/Examples.md)。对齐由 agent 计算，再调用 CLI 布局修改命令。
 
 ## 直接运行完整示例
 
-在仓库根目录执行。脚本使用自己的测试项目，完整执行创建、读取、编辑、对齐、直接 YAML 修改、校验和永久删除，不修改 Demo：
+在仓库根目录执行。脚本使用自己的测试项目，全程通过 CLI 执行创建、读取、编辑、对齐、校验和永久删除，不修改 Demo：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\AgentKnowledge\Elements\Examples\Walkthrough.ps1
@@ -58,5 +60,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\AgentKnowledge\Element
 脚本输出项目路径。默认目录在 `Code/Module/Runtime/Tests/Examples/`；可以用 `-Root` 指定新位置。默认脚本结束时清理本次创建的 `AgentExample` 项目及自动生成的空父目录，失败时也尝试清理；不删除调用者指定的父目录或已有项目。`-Keep` 明确保留结果，需要查看后再删除。示例文件是实际使用的命令输入，不是伪代码。
 
 ## 开发者约定
+
+Windows 配置文件遇到 `EPERM` / `EACCES` / `EBUSY` 时，CLI 先重试原子替换。如果文件允许读写但持续禁止替换，CLI 会核对原内容、保存恢复记录，再更新现有配置；完成后核对结果并删除恢复记录。此处理仅用于已校验的资源 `.config`，不用于 `.hbr` 索引或不可变 PNG/YAML。禁止写入或检测到外部修改时，命令报错并回滚自己的修改，不终止占用进程、不改变文件权限。
+
+异常中断或恢复失败留下的 `.HybridRefConfigRecovery_*.json` 会被 `validate` 报告，并阻止继续修改。记录包含原内容和目标内容，必须先核查恢复情况，不能直接删除记录后忽略问题。
 
 新增或扩展模块，必须同步交付 agent 可调用接口、参数与结果说明、知识库和可运行示例；模块完成验证时包含 agent 路径。具体要求见 [开发说明](../Code/Module/README.md#agent-接口与知识库维护)。

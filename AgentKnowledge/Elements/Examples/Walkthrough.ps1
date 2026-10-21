@@ -44,10 +44,10 @@ try {
     $Invariant = [Globalization.CultureInfo]::InvariantCulture
     $null = InvokeCli -Arguments @('element', 'update', '--project', $Project, '--id', 'TextA', '--x', $NextX.ToString($Invariant), '--y', $NextY.ToString($Invariant))
 
-    $Node = Join-Path $Repository 'Dependencies/Node/node.exe'
-    $Direct = & $Node (Join-Path $PSScriptRoot 'DirectEdit.cjs') $Project
-    if ($LASTEXITCODE -ne 0) { throw 'Direct YAML example failed.' }
-    $null = $Direct
+    $Text = (InvokeCli -Arguments @('element', 'inspect', '--project', $Project, '--id', 'TextA')).element
+    $NextX = $Text.x + 24
+    $NextY = $Text.y + 16
+    $null = InvokeCli -Arguments @('text', 'update', '--project', $Project, '--id', 'TextA', '--x', $NextX.ToString($Invariant), '--y', $NextY.ToString($Invariant), '--content', 'Updated through the public CLI.')
     $null = InvokeCli -Arguments @('validate', '--project', $Project)
     $Inspection = InvokeCli -Arguments @('project', 'inspect', '--project', $Project)
     if ($Inspection.elements.Count -ne 3) { throw 'Expected three elements.' }
@@ -56,7 +56,7 @@ try {
         $null = InvokeCli -Arguments @('project', 'delete', '--project', $Project)
         if (Test-Path -LiteralPath $Project) { throw 'Project deletion failed.' }
     }
-    [ordered]@{ ok = $true; project = $Project; kept = [bool]$Keep; examples = 'create, inspect, edit, replace, bind, detach, resize, align, direct YAML, validate, delete unless Keep'; elements = $Inspection.elements } | ConvertTo-Json -Depth 12
+    [ordered]@{ ok = $true; project = $Project; kept = [bool]$Keep; examples = 'public CLI: create, inspect, edit, replace, bind, detach, resize, align, validate, delete unless Keep'; elements = $Inspection.elements } | ConvertTo-Json -Depth 12
 } finally {
     if (-not $Keep) {
         try {

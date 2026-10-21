@@ -39,7 +39,7 @@ Test.afterAll(async () => {
   }
 })
 
-Test('documented CLI resources and direct YAML edits load through browser refresh', async ({ page: Page }) => {
+Test('documented public CLI operations load through browser refresh', async ({ page: Page }) => {
   await Page.goto(ServiceUrl)
   await Page.getByTestId('open').click()
   await Page.getByTestId('project-entry').filter({ hasText: 'AgentExample' }).click()
@@ -51,17 +51,19 @@ Test('documented CLI resources and direct YAML edits load through browser refres
   await Expect.poll(() => Image.evaluate(Node => (Node as HTMLImageElement).complete && (Node as HTMLImageElement).naturalWidth > 0)).toBe(true)
   await Expect(Image).toHaveAttribute('data-width', '360')
   await Expect(Image).toHaveAttribute('data-height', '240')
-  await Expect(Text).toContainText('通过直接编辑 YAML 更新。')
+  await Expect(Text).toContainText('Updated through the public CLI.')
   await Expect(Text).toHaveAttribute('data-x', '528')
   await Expect(Text).toHaveAttribute('data-y', '136')
   await Expect(Line.locator('path').first()).toHaveAttribute('stroke', '#F6C36A')
   await Expect(Line.locator('path').first()).toHaveAttribute('stroke-width', '4')
   const Before = await ReadFile(Project)
-  const Changed = SpawnSync(process.execPath, [Join(ModuleRoot, 'Scripts/RunAgent.cjs'), 'text', 'update', '--project', Project,
-    '--id', 'TextA', '--content', 'CLI refreshed again', '--x', '600'], { cwd: Fixture, encoding: 'utf8', windowsHide: true })
+  const Arguments = [Join(Repository, 'AgentKnowledge/HybridRef.cmd'), 'text', 'update', '--project', Project,
+    '--id', 'TextA', '--content', 'CLI refreshed again', '--x', '600']
+  const Command = `& ${Arguments.map(Value => `'${Value.replaceAll("'", "''")}'`).join(' ')}; exit $LASTEXITCODE`
+  const Changed = SpawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(Command, 'utf16le').toString('base64')], { cwd: Fixture, encoding: 'utf8', windowsHide: true })
   Expect(Changed.status, Changed.stderr).toBe(0)
   Expect(await ReadFile(Project)).toEqual(Before)
-  await Expect(Text).toContainText('通过直接编辑 YAML 更新。')
+  await Expect(Text).toContainText('Updated through the public CLI.')
   await Page.getByTestId('scan-resources').click()
   await Expect(Text).toHaveText('CLI refreshed again')
   await Expect(Text).toHaveAttribute('data-x', '600')

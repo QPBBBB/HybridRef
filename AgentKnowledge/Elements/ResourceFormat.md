@@ -1,5 +1,7 @@
 # 资源结构与直接编辑
 
+常规 agent 写入统一使用 `HybridRef.cmd`。下述结构用于直接阅读与理解 YAML；只有用户明确要求手动编辑时才执行直接写入，不能用它绕过 CLI 故障。
+
 磁盘项目与浏览器运行时数据不同。磁盘 `.hbr` 第 7 版只保存格式、viewport、按类型排列的 ID 与 `asset` 引用；位置尺寸在资源的 `.config`。CLI `inspect` 合并二者，不能把其完整 JSON 原样写回 `.hbr`。
 
 | 类型 | 资源文件 | 配置 format |
@@ -42,6 +44,6 @@ instances:
 
 旧内容文件可能被 Markdown 或其他实例引用，不应仅因不再属于当前元素就删除。CLI 保留旧内容及不再声明该 ID 的旧配置，不执行全目录资源清理。内容更新可能出现暂时缺失的配对，因此不要在写入过程中刷新。正式 CLI 使用临时文件、外部变更检查和失败回滚；直接编辑同样应遵守完整配对的发布顺序。
 
-[DirectEdit.cjs](Examples/DirectEdit.cjs) 是实际可执行的直接 YAML 示例，由 [Walkthrough.ps1](Examples/Walkthrough.ps1) 调用。它修改 `TextA` 的内容和布局，重新计算哈希、生成新配对，并保留旧配置里的其他实例。该教学脚本只用于示例项目的串行运行；常规写入使用 CLI 的冲突检查与回滚。
+[DirectEdit.cjs](Examples/DirectEdit.cjs) 保留为直接 YAML 编辑的教学参考，默认 [Walkthrough.ps1](Examples/Walkthrough.ps1) 不再调用它。它修改 `TextA` 的内容和布局，重新计算哈希、生成新配对，并保留旧配置里的其他实例。仅在用户明确要求验证直接编辑方法时用于示例项目；常规写入使用 CLI 的冲突检查与回滚。
 
 `validate` 只读取文件，报告活动元素的资源格式、哈希、配对、重复 ID 和不可用绑定。损坏项目需要先修复，编辑命令不会在存在校验问题时继续写入。崩溃遗留 `.HybridRefAgent.lock` 时，确认对应进程已退出再手动移除。
