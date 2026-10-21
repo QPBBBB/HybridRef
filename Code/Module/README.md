@@ -48,9 +48,24 @@ Markdown 使用固定版本 Marked 18.1.1（GFM + breaks）解析，DOMPurify 3.
 
 `/api/markdown-image` 是按标签页与当前项目隔离的只读接口，支持项目目录内图片、公网 HTTP/HTTPS 和内嵌图片。相对文件不得越出项目目录或经过符号链接；公网下载逐次验证重定向和 DNS，禁止本机与内网地址。图片限制为 20 MB / 6400 万像素，统一转换为 PNG，缓存于当前页面并用于画布和快照。远程图片加载不阻塞保存；不持久化远程缓存，不支持 SVG。Markdown 浏览器测试覆盖 GFM、中文编辑与保存、图片、HTML 清理、链接操作，以及画布和 PNG 的像素对照。
 
-Playwright 报告放在 `Runtime/PlaywrightReport/`，失败附件放在 `Runtime/TestResults/`；仅失败时保留截图和 trace。启动日志见 `Runtime/Logs/Launcher.log`、`Runtime/Logs/Server.log`，依赖安装日志为 `Runtime/Logs/Install.log`。根目录 `Start.cmd -Check` 仅检查并按需构建，不打开浏览器。
+Runtime 按用途固定分类，禁止在根目录散放临时脚本、截图或日志：
 
-`Dependencies/Pnpm.cmd demo` 仅用于从捆绑素材创建缺失的 `Project/Demo/Demo.hbr`，已有该文件时会拒绝覆盖；它不是启动步骤。此命令复用 esbuild 在 `Runtime/` 编译生成器并通过本地 Node 执行，无需额外的 TypeScript 运行器。
+| 路径 | 用途与保留规则 |
+| --- | --- |
+| `Runtime/Server.json`、`Runtime/Logs/` | 服务状态、启动和依赖日志；清理测试文件时保留 |
+| `Runtime/Tests/Reports/` | 最新测试报告：`Unit.json`、`Playwright/`；每次运行覆盖 |
+| `Runtime/Tests/Results/` | 按测试用例组织截图和 trace；仅保留失败用例产物，下次运行清空旧结果 |
+| `Runtime/Tests/Logs/` | 验证命令日志，使用固定名称覆盖，不按每次运行新增目录 |
+| `Runtime/Tests/Temp/` | 临时测试环境；测试结束或失败后清理本次创建的目录 |
+| `Runtime/Tests/Examples/` | agent 示例；默认自动清理，只有 `-Keep` 明确保留 |
+| `Runtime/Tests/Manual/` | 需要交付查看的手动验证截图和简短结果；清理后不保留中间输入与脚本 |
+| `Runtime/Tests/Archive/` | 此次整理归档的旧产物，可手动删除整个目录；后续测试不向这里写入 |
+| `Runtime/Tools/` | 可重新生成的辅助程序，如 Demo 生成器 |
+| `Runtime/Backups/` | 明确保留的历史迁移备份；不纳入自动测试清理 |
+
+浏览器测试中的额外截图也必须使用 `Test.info().outputPath(...)`，不要另写固定的根目录 PNG。临时脚本用完删除，可复用工具放回 `Scripts/` 或正式源码。启动日志见 `Runtime/Logs/Launcher.log`、`Runtime/Logs/Server.log`，依赖安装日志为 `Runtime/Logs/Install.log`。整个 Runtime 被 Git 忽略。根目录 `Start.cmd -Check` 仅检查并按需构建，不打开浏览器。
+
+`Dependencies/Pnpm.cmd demo` 仅用于从捆绑素材创建缺失的 `Project/Demo/Demo.hbr`，已有该文件时会拒绝覆盖；它不是启动步骤。此命令复用 esbuild 在 `Runtime/Tools/` 编译生成器并通过本地 Node 执行，无需额外的 TypeScript 运行器。
 
 项目自有文件、函数、变量及本地导入名称使用 PascalCase。`Code/Resource/` 下所有子目录和文件主体名称也必须使用 PascalCase，由 `check:naming` 递归检查。资源目录仅保留当前应用或开发脚本实际使用的素材；旧版应用图标、音效、捆绑字体和 Whisper 引擎已移除。工具要求的配置文件名、外部 API、YAML/HTTP 字段和自动生成的项目资源名保留其格式。
 
@@ -73,6 +88,19 @@ Playwright 报告放在 `Runtime/PlaywrightReport/`，失败附件放在 `Runtim
 `ImageStore.ScanProject` 在全局保存队列内读取第 7 版索引，扫描 `Resource/` 顶层 Texture/Text/Line 与同名 config，从 `instances` 获取 ID，维持既有顺序并追加新对象。唯一 ID 的资源改名可更新原引用；跨类型或多资源 ID 冲突只提示，不任意选择版本；缺失既有引用继续保留。临时 ImageStore 完成加载后，使用原内容比较保护原子更新索引，再替换当前会话；加载失败不会覆盖当前缓存。扫描不改写资源。旧项目先正常保存迁移后再扫描。格式与示例见根 README 的“Agent 写入与刷新”。
 
 清理只考虑本次保存前本项目索引里的资源，保留未扫描资源、无索引文件和不完整配对。待删除配对如有新增 config 实例、外部布局变动或资源损坏，也保守保留。尚未索引的 Text YAML 中的 Markdown 图片参与保护；不能确定其图片引用时保留 PNG。共享引用消失后仍无本项目索引的文件继续保留，避免误删外部刚发布的数据。
+
+## Agent 接口与知识库维护
+
+本地入口为仓库 `AgentKnowledge/HybridRef.cmd`，实现位于 `Source/Agent`，使用 `Scripts/RunAgent.cjs` 与仓库自带 Node 离线运行。CLI 复用 Storage 的格式校验、图片规范化和 Arrows 的连线几何；元素编辑写资源/config，用户刷新时发布索引。`ReadCatalog` 的扫描只读，不调用会写索引的 `ScanProject`。资源内容更新保留旧字节及其他实例，旧配置移除本 ID；不做广泛资源清理。项目命令提供新建和经过路径校验的永久删除。
+
+**以后新增或扩展模块，必须同时提供本地 agent 接口。** 开发完成标准包括：
+
+1. 提供可编程调用入口，复用 UI 的核心逻辑及校验，定义输入、输出、失败语义和文件影响。
+2. 同步更新 `AgentKnowledge/README.md` 和对应元素/计算文档，解释新增字段、单位、默认值与兼容规则。
+3. 提供能用仓库自带环境直接执行的示例，并把示例、资源校验和刷新加载纳入验证。
+4. 更新现有接口时同步调整知识库与示例；不能只完成 UI 而遗漏 agent 能力。
+
+基础验证：`Dependencies/Pnpm.cmd typecheck`、`test:run`、`build`、`exec playwright test`。命令行实际示例另运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File AgentKnowledge/Elements/Examples/Walkthrough.ps1`。默认测试项目在 Runtime 下创建和删除；应用浏览器测试验证写出的文件通过刷新载入。测试真实项目须由用户明确授权。
 
 ## 来源与许可
 

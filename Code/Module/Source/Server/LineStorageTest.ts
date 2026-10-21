@@ -168,22 +168,27 @@ Describe('Line YAML and config storage', () => {
     const Missing = await Reopened.LoadProject(Project)
     const Manual = Read(Project); delete Manual.arrows
     WriteFileSync(Project, Stringify(Manual))
-    await Reopened.CleanupProject(Project, Missing.document)
+    const ConfigBefore = ReadFileSync(Files.Config)
+    Expect((await Reopened.CleanupProject(Project, Missing.document)).removedFiles).toBe(0)
     Expect(Read(Project).arrows).toBeUndefined()
-    Expect(ExistsSync(Files.Config)).toBe(false)
+    // Manual removal from the index does not authorize pruning an incomplete,
+    // now-unindexed resource pair.
+    Expect(ReadFileSync(Files.Config)).toEqual(ConfigBefore)
   })
 
-  It('protects a shared line pair until the last project reference is removed', async () => {
+  It('protects shared line resources and retains them after they leave the current index', async () => {
     const Root = Temp(), Project = Join(Root, 'Shared.hbr'), Store = new ImageStore()
     await Store.SaveProject(Project, Board())
     const Other = Join(Root, 'Other.hbr'), Files = LineFiles(Project)
+    const Before = [ReadFileSync(Files.Yaml), ReadFileSync(Files.Config)]
     CpSync(Project, Other)
     WriteFileSync(Join(Root, 'Resource/Notes.config'), 'keep')
     await Store.SaveProject(Project, EmptyDocument())
     Expect(ExistsSync(Files.Yaml)).toBe(true); Expect(ExistsSync(Files.Config)).toBe(true)
     RmSync(Other)
-    Expect((await Store.CleanupProject(Project, EmptyDocument())).removedFiles).toBe(2)
-    Expect(ReaddirSync(Join(Root, 'Resource'))).toEqual(['Notes.config'])
+    Expect((await Store.CleanupProject(Project, EmptyDocument())).removedFiles).toBe(0)
+    Expect([ReadFileSync(Files.Yaml), ReadFileSync(Files.Config)]).toEqual(Before)
+    Expect(ReaddirSync(Join(Root, 'Resource')).sort()).toEqual(['Notes.config', Basename(Files.Yaml), Basename(Files.Config)].sort())
   })
 
   It.each(['missing-config', 'invalid-config', 'missing-instance', 'config-link', 'yaml-link', 'hash', 'path'])('isolates %s without rewriting the project and rejects unsafe paths', async (Case) => {
@@ -230,6 +235,24 @@ Describe('Line YAML and config storage', () => {
     Spy.mockRestore(); SyncBuiltinEsmExports()
     await Store.SaveProject(Project, Doc)
     Expect((await new ImageStore().LoadProject(Project)).document).toEqual(Doc)
+  })
+
+  It.runIf(process.platform === 'win32')('saves after a Windows sharing lock outlasts the former short retry window', async () => {
+    const Root = Temp(), Project = Join(Root, 'SharingLock.hbr'), Store = new ImageStore(), Doc = Board()
+    await Store.SaveProject(Project, Doc)
+    const Files = LineFiles(Project), Rename = FsPromises.rename
+    let Attempts = 0
+    Vi.spyOn(FsPromises, 'rename').mockImplementation(async (From, To) => {
+      if (To === Files.Config && ++Attempts <= 6) throw Object.assign(new Error('sharing violation'), { code: 'EPERM' })
+      return Rename(From, To)
+    })
+    SyncBuiltinEsmExports()
+    Doc.arrows![0].x = 900
+    await Store.SaveProject(Project, Doc)
+    Expect(Attempts).toBeGreaterThan(6)
+    Expect(Read(Files.Config).instances['line-1'].x).toBe(900)
+    Expect((await new ImageStore().LoadProject(Project)).document).toEqual(Doc)
+    Expect(ReaddirSync(Join(Root, 'Resource')).some(Name => Name.endsWith('.tmp'))).toBe(false)
   })
 
   It.runIf(process.platform === 'win32')('retries a Windows sharing violation but preserves an edit made during the retry', async () => {

@@ -1,0 +1,9 @@
+{
+  "id": "LineA",
+  "startBinding": null,
+  "endBinding": null,
+  "start": { "x": 300, "y": 320 },
+  "end": { "x": 600, "y": 500 },
+  "axis": "vertical",
+  "manualBend": false
+}

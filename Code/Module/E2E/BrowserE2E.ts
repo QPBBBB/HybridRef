@@ -480,7 +480,8 @@ Test('image movement updates only its config and reopening reads agent-edited ge
   const Layout = (await ReadImageLayout(Page))[0]
   const Saving = Page.waitForResponse(Response => Response.url().endsWith('/api/save') && Response.request().method() === 'POST')
   await Page.keyboard.press('Control+s')
-  Expect((await Saving).ok()).toBe(true)
+  const SaveResult = await Saving
+  Expect(SaveResult.ok(), await SaveResult.text()).toBe(true)
   Expect(await ReadFile(Project, 'utf8')).toBe(Before)
   Expect(await ReadFile(Configs[1], 'utf8')).toBe(OtherBefore)
   const Config = Parse(await ReadFile(Configs[0], 'utf8'))
@@ -552,11 +553,11 @@ Test('Ctrl+C exports selected images and styled text as an opaque, lossless PNG 
   const TextBackground = PixelAt(MixedRaw.data, 280, 22, 82)
   ;[30, 38, 47, 255].forEach((Channel, Index) => Expect(Math.abs(TextBackground[Index] - Channel)).toBeLessThanOrEqual(1))
   Expect(MixedBytes.length).toBeLessThan(MixedRaw.data.length / 4)
-  await WriteFile(Join(ModuleRoot, 'Runtime/SelectionSnapshot.png'), MixedBytes)
+  await WriteFile(Test.info().outputPath('SelectionSnapshot.png'), MixedBytes)
 
   // Compare with independently rendered DOM text, including bold, alignment, wrapping and clipping.
   const Selection = (await Page.getByTestId('selection-box').boundingBox())!
-  const Reference = await Page.screenshot({ clip: Selection, path: Join(ModuleRoot, 'Runtime/SnapshotCanvas.png'),
+  const Reference = await Page.screenshot({ clip: Selection, path: Test.info().outputPath('SnapshotCanvas.png'),
     style: '.selection-box,.text-settings-button,.connection-handle,[data-image-id="unselected"]{visibility:hidden}.board-image,.board-text{outline:none}' })
   const ReferenceRaw = await Sharp(Reference).ensureAlpha().raw().toBuffer()
   let DifferentChannels = 0
@@ -820,7 +821,7 @@ Test('text styles, independent copies, edit history and resource references surv
   const AlignButtons = await Page.getByTestId('text-align').getByRole('button').all()
   const AlignBounds = await Promise.all(AlignButtons.map(Button => Button.boundingBox()))
   Expect(new Set(AlignBounds.map(Bounds => Bounds!.y)).size).toBe(1)
-  await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/TextFormatSettings.png') })
+  await Page.screenshot({ path: Test.info().outputPath('TextFormatSettings.png') })
   await Page.getByTestId('text-apply').click()
   await Page.getByTestId('text-item').dblclick()
   await Page.getByTestId('text-content').fill('设计标题\n中文多行说明：颜色与透明度')
@@ -926,7 +927,7 @@ Test('orphan cleanup preserves missing references and inline edits, and restored
   Expect((await ReadImageLayout(Page))[1]).toEqual(MissingGeometry)
   await Expect.poll(() => Placeholder.evaluate(Node => (Node as HTMLImageElement).complete && (Node as HTMLImageElement).naturalWidth > 0)).toBe(true)
   await Expect(Placeholder).toHaveAttribute('alt', '图片资源无法读取')
-  await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/MissingResources.png') })
+  await Page.screenshot({ path: Test.info().outputPath('MissingResources.png') })
   await Texts.first().dblclick()
   await Page.getByTestId('text-content').fill('清理也保存原位编辑草稿')
   await Page.getByTestId('settings').click()
@@ -946,7 +947,10 @@ Test('orphan cleanup preserves missing references and inline edits, and restored
   Expect(Saved.texts[1]).toEqual({ id: 'missing-text', asset: `Resource/${MissingTextName}` })
   Expect(Parse(await ReadFile(Join(Directory, Saved.texts[0].asset), 'utf8')).content).toBe('清理也保存原位编辑草稿')
   const Referenced = [...Saved.images, ...Saved.texts].map((Item: { asset: string }) => Basename(Item.asset)).sort()
-  Expect((await Readdir(ResourceDirectory)).sort()).toEqual(['Orphan.png', 'Orphan.yaml', ImageName, Basename(Saved.texts[0].asset), ...Saved.texts.map((Item: { asset: string }) => Basename(Item.asset).replace('.yaml', '.config')), ImageName.replace('.png', '.config'), MissingImageName.replace('.png', '.config')].sort())
+  // The legacy text had no config pair before migration. Preserve its bytes,
+  // alongside unindexed external files and the missing objects' v7 configs.
+  Expect(await ReadFile(Join(ResourceDirectory, TextName))).toEqual(TextBytes)
+  Expect((await Readdir(ResourceDirectory)).sort()).toEqual(['Orphan.png', 'Orphan.yaml', TextName, ImageName, Basename(Saved.texts[0].asset), ...Saved.texts.map((Item: { asset: string }) => Basename(Item.asset).replace('.yaml', '.config')), ImageName.replace('.png', '.config'), MissingImageName.replace('.png', '.config')].sort())
   Expect(Referenced.every(Name => /^(Texture|Text)_[A-F0-9]{16}_[A-F0-9]{8}\.(png|yaml)$/.test(Name))).toBe(true)
   await Page.reload()
   await Expect(Images).toHaveCount(2)
@@ -962,7 +966,10 @@ Test('orphan cleanup preserves missing references and inline edits, and restored
   Expect((await ReadImageLayout(Page))[1]).toEqual(MissingGeometry)
   const Recovered = Parse(await ReadFile(Path, 'utf8'))
   const RecoveredReferences = [...Recovered.images, ...Recovered.texts].map((Item: { asset: string }) => Basename(Item.asset)).sort()
-  Expect((await Readdir(ResourceDirectory)).sort()).toEqual(['Orphan.png', 'Orphan.yaml', ...RecoveredReferences, ...Recovered.images.map((Item: { asset: string }) => Basename(Item.asset).replace('.png', '.config'))].sort())
+  Expect((await Readdir(ResourceDirectory)).sort()).toEqual(['Orphan.png', 'Orphan.yaml', TextName, ...RecoveredReferences,
+    ...Recovered.images.map((Item: { asset: string }) => Basename(Item.asset).replace('.png', '.config')),
+    ...Recovered.texts.map((Item: { asset: string }) => Basename(Item.asset).replace('.yaml', '.config')),
+  ].sort())
 })
 
 Test('plain text paste, mixed selection, cut/copy, movement and text frame resizing support undo', async ({ page: Page }) => {
@@ -1115,7 +1122,7 @@ Test('inline text keeps native typing and IME, and the font card preserves conte
   const RevisedContent = '设计笔记\n在画布中直接输入文字\n字体与背景随手调整'
   await Content.fill(RevisedContent)
   await Page.keyboard.press('Control+End')
-  await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/TextInline.png') })
+  await Page.screenshot({ path: Test.info().outputPath('TextInline.png') })
   await Page.getByTestId('text-settings').click()
   await Expect(Page.getByTestId('text-editor')).toBeVisible()
   await Expect(Page.getByTestId('text-editor').getByTestId('text-content')).toHaveCount(0)
@@ -1128,7 +1135,7 @@ Test('inline text keeps native typing and IME, and the font card preserves conte
   const FinalContent = `${RevisedContent}。`
   await Expect(Content).toHaveValue(FinalContent)
   await Expect(Page.getByTestId('text-editor')).toBeVisible()
-  await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/TextFontSettings.png') })
+  await Page.screenshot({ path: Test.info().outputPath('TextFontSettings.png') })
   // Canceling a style preview must retain the independent content draft.
   await Page.getByTestId('text-cancel').click()
   await Expect(Page.getByTestId('text-editor')).toHaveCount(0)
@@ -1185,7 +1192,7 @@ Test('text settings gear follows its frame with a fixed size matching arrow sett
   Expect((await Settings.boundingBox())!.width).toBe(SettingsBefore.width)
   Expect((await Create.boundingBox())!).toEqual(CreateBefore)
   await Expect(Text.locator('.text-surface')).toHaveCSS('font-size', '24px')
-  await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/TextSettingsGear.png') })
+  await Page.screenshot({ path: Test.info().outputPath('TextSettingsGear.png') })
   await Page.keyboard.press('Escape')
   await Expect(Settings).toHaveCount(0)
   await Create.click()
@@ -1280,12 +1287,12 @@ Test('Markdown renders GFM, keeps source editable and saved, and exports the sam
   const SampleY = Math.floor((ImageBounds.y + ImageBounds.height / 2 - FrameBounds.y) / Scale)
   const Offset = (SampleY * 760 + SampleX) * 4
   Expect(Array.from(Raw.data.subarray(Offset, Offset + 4))).toEqual([36, 147, 193, 255])
-  await WriteFile(Join(ModuleRoot, 'Runtime/MarkdownSnapshot.png'), Snapshot)
-  await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/MarkdownCanvas.png') })
+  await WriteFile(Test.info().outputPath('MarkdownSnapshot.png'), Snapshot)
+  await Page.screenshot({ path: Test.info().outputPath('MarkdownCanvas.png') })
   await Page.setViewportSize({ width: 1180, height: 1800 })
   await Page.getByTestId('fit').click()
   await Page.getByTestId('zoom').click()
-  const Reference = await Page.screenshot({ clip: (await Frame.boundingBox())!, path: Join(ModuleRoot, 'Runtime/MarkdownDom.png'),
+  const Reference = await Page.screenshot({ clip: (await Frame.boundingBox())!, path: Test.info().outputPath('MarkdownDom.png'),
     style: '.selection-box,.text-settings-button,.connection-handle{visibility:hidden}.board-text{outline:none}' })
   const ReferenceRaw = await Sharp(Reference).ensureAlpha().raw().toBuffer()
   let DifferentChannels = 0
@@ -1450,7 +1457,7 @@ Test('arrows support orthogonal drawing, endpoint and bend editing, styles, PNG 
   Expect(ZoomedSettings.y + ZoomedSettings.height + 10).toBeCloseTo(ZoomedBox.y, 1)
   await Page.getByTestId('zoom').click()
   await Page.getByTestId('arrow-settings').click()
-  await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/ArrowSettings.png') })
+  await Page.screenshot({ path: Test.info().outputPath('ArrowSettings.png') })
   await Page.getByTestId('arrow-apply').click()
   await CaptureClipboard(Page)
   const Png = Buffer.from((await CopySnapshot(Page)).png, 'base64')
@@ -1459,7 +1466,7 @@ Test('arrows support orthogonal drawing, endpoint and bend editing, styles, PNG 
   const Colored = []
   for (let X = 20; X < 150; X++) { const Offset = (12 * Raw.info.width + X) * 4; Colored.push(Raw.data[Offset] > 230 && Raw.data[Offset + 1] > 50 && Raw.data[Offset + 1] < 90) }
   Expect(Colored.some(Boolean)).toBe(true); Expect(Colored.some((Value) => !Value)).toBe(true)
-  await WriteFile(Join(ModuleRoot, 'Runtime/ArrowSnapshot.png'), Png)
+  await WriteFile(Test.info().outputPath('ArrowSnapshot.png'), Png)
   await Page.keyboard.press('Control+s')
   await ChooseProjectName(Page, 'ArrowFree')
   await Expect(Page).toHaveTitle('ArrowFree.hbr — HybridRef')
@@ -1533,7 +1540,7 @@ Test('arrow bindings follow image and text objects, remap copies and survive del
   Expect(ReloadedEnds.start.y).toBeCloseTo(MovedEnds.start.y + 20)
   await Page.keyboard.press('Control+a'); await Page.keyboard.press('Space')
   await CaptureClipboard(Page); await CopySnapshot(Page)
-  await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/ArrowCanvas.png') })
+  await Page.screenshot({ path: Test.info().outputPath('ArrowCanvas.png') })
 })
 
 Test('arrow creation cancels empty gestures and Escape without changing the board', async ({ page: Page }) => {
@@ -1607,7 +1614,7 @@ Test('all four source handles preview one turn before snapping and retain it aft
       Points.forEach((Point, Index) => { Expect(Point.x).toBeCloseTo(Expected[Index].x); Expect(Point.y).toBeCloseTo(Expected[Index].y) })
       LastPoints = Points
     }
-    if (Side === 'bottom') await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/ConnectionPreview.png') })
+    if (Side === 'bottom') await Page.screenshot({ path: Test.info().outputPath('ConnectionPreview.png') })
     await Page.mouse.up()
     Expect(await ReadArrowPoints(Page)).toEqual(LastPoints)
     await Page.keyboard.press('Control+z'); await Expect(Page.getByTestId('arrow-item')).toHaveCount(0)
@@ -1632,7 +1639,7 @@ Test('four handles on images and text create bound lines directly, with snapping
   const Right = ConnectionHandle(Page, Ids.image, 'right'), RightBox = (await Right.boundingBox())!
   Expect(RightBox.x + RightBox.width / 2).toBeCloseTo(ImageBox.x + ImageBox.width + 20)
   Expect(RightBox.y + RightBox.height / 2).toBeCloseTo(ImageBox.y + ImageBox.height / 2)
-  await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/ConnectionHandles.png') })
+  await Page.screenshot({ path: Test.info().outputPath('ConnectionHandles.png') })
   await Page.mouse.move(RightBox.x + RightBox.width / 2, RightBox.y + RightBox.height / 2)
   await Page.mouse.down()
   await Expect(Page.getByTestId('connection-handle')).toHaveCount(8)
@@ -1644,7 +1651,7 @@ Test('four handles on images and text create bound lines directly, with snapping
   Expect(Ends.start.y).toBeCloseTo(ImageBox.y + ImageBox.height / 2)
   Expect(Ends.end.x).toBeCloseTo(TextBox.x)
   Expect(Ends.end.y).toBeCloseTo(TextBox.y + TextBox.height / 2)
-  await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/ConnectionSnapping.png') })
+  await Page.screenshot({ path: Test.info().outputPath('ConnectionSnapping.png') })
   await Page.mouse.up()
   await Expect(Page.getByTestId('connection-handle')).toHaveCount(0)
   await Expect(Page.getByTestId('arrow-item')).toHaveCount(1)
@@ -1775,8 +1782,8 @@ Test('existing line endpoints reconnect to handles with Alt temporarily disablin
   await Page.mouse.up()
   await CaptureClipboard(Page)
   const Png = Buffer.from((await CopySnapshot(Page)).png, 'base64')
-  await WriteFile(Join(ModuleRoot, 'Runtime/ConnectionSnapshot.png'), Png)
-  await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/ConnectionCrossDirections.png') })
+  await WriteFile(Test.info().outputPath('ConnectionSnapshot.png'), Png)
+  await Page.screenshot({ path: Test.info().outputPath('ConnectionCrossDirections.png') })
   await Page.keyboard.press('Control+z')
   Expect(await ReadArrowEndpoints(Page)).toEqual(Connected)
   await Page.keyboard.press('Control+z')
@@ -1821,7 +1828,7 @@ Test('arrow strokes do not protrude through the tip in the canvas or copied PNG'
       Expect(Pixel(-2, 4)).toEqual([12, 13, 15, 255])
       Expect(Pixel(-10)).toEqual([255, 255, 255, 255])
     }
-    if (!Index) await WriteFile(Join(ModuleRoot, 'Runtime/ArrowTip.png'), Png)
+    if (!Index) await WriteFile(Test.info().outputPath('ArrowTip.png'), Png)
     await Page.keyboard.press('Control+a'); await Page.keyboard.press('Delete')
     await Expect(Arrow).toHaveCount(0)
   }
@@ -1865,7 +1872,7 @@ Test('resource warnings survive save and cleanup while healthy objects remain ed
   await Expect(Page.getByTestId('text-item')).toHaveCount(1)
   await Warning.locator('summary').click()
   await Expect(Warning).toContainText('哈希不匹配')
-  await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/ResourceRecovery.png') })
+  await Page.screenshot({ path: Test.info().outputPath('ResourceRecovery.png') })
   await Page.getByTestId('text-item').dblclick()
   await Page.getByTestId('text-content').fill('正常内容仍可编辑')
   await Page.keyboard.press('Control+Enter')

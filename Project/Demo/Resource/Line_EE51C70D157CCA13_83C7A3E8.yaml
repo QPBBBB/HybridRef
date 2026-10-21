@@ -1,0 +1,22 @@
+format: "hybridref-line"
+formatVersion: 1
+arrow:
+  start:
+    x: 0.02531645569620253
+    y: 0.02185792349726776
+  end:
+    x: 0.9746835443037974
+    y: 0.9781420765027322
+  axis: "vertical"
+  bend: 0.9781420765027322
+  color: "#FFFFFF"
+  thickness: 2
+  dashed: false
+  startBinding:
+    id: "AgentDemoImage"
+    side: "bottom"
+    offset: 0.5
+  endBinding:
+    id: "AgentDemoText"
+    side: "left"
+    offset: 0.5

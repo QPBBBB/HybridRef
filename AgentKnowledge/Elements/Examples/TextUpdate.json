@@ -1,0 +1,11 @@
+{
+  "id": "TextA",
+  "text": {
+    "content": "# 编辑完成\n支持 **Markdown**、样式与布局更新。",
+    "opacity": 0.9,
+    "font": { "size": 28, "weight": 700, "color": "#DBF4FF" },
+    "background": { "color": "#19323A" },
+    "paragraph": { "align": "center", "lineHeight": 1.4 },
+    "padding": 16
+  }
+}

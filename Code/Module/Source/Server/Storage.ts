@@ -17,7 +17,7 @@ type StoredText = { id: string; asset: string } & Partial<ImageGeometry>
 type StoredImage = Pick<BoardImage, 'id' | 'asset'> & Partial<ImageGeometry>
 type StoredLine = { id: string; asset: string }
 type StoredDocument = Omit<BoardDocument, 'formatVersion' | 'images' | 'texts' | 'arrows'> & { formatVersion: 3 | 4 | 5 | 6 | 7; images: StoredImage[]; texts: StoredText[]; arrows?: (BoardArrow | StoredLine)[] }
-type LayoutConfig = { format: 'hybridref-texture' | 'hybridref-text-layout' | 'hybridref-line-layout'; formatVersion: 1; instances: Record<string, ImageGeometry> }
+export type LayoutConfig = { format: 'hybridref-texture' | 'hybridref-text-layout' | 'hybridref-line-layout'; formatVersion: 1; instances: Record<string, ImageGeometry> }
 type TextSource = { Reference: string; Value: BoardText }
 type LineSource = { Reference?: string; Value: BoardArrow }
 type ConfigWrite = { path: string; before: string | undefined; after: string }
@@ -38,7 +38,7 @@ function IsRecord(Value: unknown): Value is Record<string, unknown> {
 
 function Digest(Bytes: Buffer): string { return CreateHash('sha256').update(Bytes).digest('hex') }
 // Accept only proven LF/CRLF differences, never arbitrary YAML reformatting.
-function MatchesResource(Bytes: Buffer, Expected: string, Yaml = false): boolean {
+export function MatchesResource(Bytes: Buffer, Expected: string, Yaml = false): boolean {
   const Matches = (Value: Buffer) => Digest(Value).slice(0, Expected.length).toUpperCase() === Expected.toUpperCase()
   if (Matches(Bytes)) return true
   if (!Yaml) return false
@@ -64,13 +64,13 @@ function Geometry(Value: { x?: unknown; y?: unknown; width?: unknown; height?: u
   return { x: RequireNumber(Value.x, `${Label} x`), y: RequireNumber(Value.y, `${Label} y`), width: RequireNumber(Value.width, `${Label}宽度`, true), height: RequireNumber(Value.height, `${Label}高度`, true) }
 }
 
-function ConfigPath(Asset: string): string { return Asset.replace(/\.(png|yaml)$/, '.config') }
-function ConfigFormat(Path: string): LayoutConfig['format'] {
+export function ConfigPath(Asset: string): string { return Asset.replace(/\.(png|yaml)$/, '.config') }
+export function ConfigFormat(Path: string): LayoutConfig['format'] {
   return /^Text_/i.test(Basename(Path)) ? 'hybridref-text-layout' : /^Line_/i.test(Basename(Path)) ? 'hybridref-line-layout' : 'hybridref-texture'
 }
 function ConfigLabel(Format: LayoutConfig['format']): string { return Format === 'hybridref-texture' ? '图片' : Format === 'hybridref-text-layout' ? '文本' : '箭头' }
 
-function ParseConfig(Text: string, Format: LayoutConfig['format'] = 'hybridref-texture'): LayoutConfig {
+export function ParseConfig(Text: string, Format: LayoutConfig['format'] = 'hybridref-texture'): LayoutConfig {
   const Label = `${ConfigLabel(Format)}配置`
   const Value = ParseYaml(Text, Label)
   if (!IsRecord(Value) || Value.format !== Format || Value.formatVersion !== 1 || !IsRecord(Value.instances)) throw new Error(`${Label}格式无效，请使用第 1 版 ${Format}。`)
@@ -97,7 +97,7 @@ function RequireColor(Value: unknown, Label: string): string {
   return Value
 }
 
-function ValidateText(Value: unknown): TextResource {
+export function ValidateText(Value: unknown): TextResource {
   if (!IsRecord(Value) || Value.format !== 'hybridref-text' || Value.formatVersion !== 1) throw new Error('文本资源格式无效，请使用第 1 版 hybridref-text。')
   if (typeof Value.content !== 'string') throw new Error('文本资源缺少有效的文字内容。')
   if (!IsRecord(Value.font) || !IsRecord(Value.background) || !IsRecord(Value.paragraph)) throw new Error('文本资源缺少有效的字体、背景或段落样式。')
@@ -131,7 +131,7 @@ function ValidateArrowBinding(Value: unknown, Id: string): ArrowBinding | undefi
   return { id: Value.id, side: Value.side as ArrowBinding['side'], offset: RequireOpacity(Value.offset, '箭头连接位置') }
 }
 
-function ValidateArrow(Value: unknown, Ids: Set<string>): BoardArrow {
+export function ValidateArrow(Value: unknown, Ids: Set<string>): BoardArrow {
   if (!IsRecord(Value) || typeof Value.id !== 'string' || !TextId.test(Value.id)) throw new Error('箭头缺少安全有效的 ID。')
   if (Ids.has(Value.id)) throw new Error(`画板包含重复的对象 ID：${Value.id}`)
   Ids.add(Value.id)
@@ -202,21 +202,21 @@ function ValidateDocument(Value: unknown, Stored: boolean): BoardDocument | Stor
   } as BoardDocument | StoredDocument
 }
 
-function ParseYaml(Text: string, Label: string): unknown {
+export function ParseYaml(Text: string, Label: string): unknown {
   const Yaml = ParseDocument(Text, { uniqueKeys: true })
   if (Yaml.errors.length) throw new Error(`${Label} YAML 无效：${Yaml.errors[0].message}`)
   return Yaml.toJS({ maxAliasCount: 0 })
 }
 
-function ParseProject(Text: string): StoredDocument { return ValidateDocument(ParseYaml(Text, '画板'), true) }
-function Serialize(Value: unknown): string { return Stringify(Value, { indent: 2, lineWidth: 0, aliasDuplicateObjects: false, defaultKeyType: 'PLAIN', defaultStringType: 'QUOTE_DOUBLE' }) }
+export function ParseProject(Text: string): StoredDocument { return ValidateDocument(ParseYaml(Text, '画板'), true) }
+export function Serialize(Value: unknown): string { return Stringify(Value, { indent: 2, lineWidth: 0, aliasDuplicateObjects: false, defaultKeyType: 'PLAIN', defaultStringType: 'QUOTE_DOUBLE' }) }
 
 function StoredReferences(Document: StoredDocument | undefined): StoredLine[] {
   return [...Document?.images ?? [], ...Document?.texts ?? [], ...Document?.arrows?.filter((Item): Item is StoredLine => 'asset' in Item) ?? []]
 }
 
 /** Discover instances without changing resource files or dropping unavailable references. */
-async function ScanIndex(Target: string, Stored: StoredDocument): Promise<{ Document: StoredDocument; Issues: ResourceIssue[] }> {
+export async function ScanIndex(Target: string, Stored: StoredDocument): Promise<{ Document: StoredDocument; Issues: ResourceIssue[] }> {
   const ProjectDir = Dirname(Target), ResourceDir = Join(ProjectDir, 'Resource')
   const Entries = await Readdir(await GuardedResource(ProjectDir, ResourceDir), { withFileTypes: true })
   const Names = new Set<string>()
@@ -299,7 +299,7 @@ function Inside(Parent: string, Child: string): boolean {
   return Path === '' || (!IsAbsolute(Path) && Path !== '..' && !Path.startsWith(`..\\`) && !Path.startsWith('../'))
 }
 
-async function GuardedResource(ProjectDir: string, Path: string, Label = '图片'): Promise<string> {
+export async function GuardedResource(ProjectDir: string, Path: string, Label = '图片'): Promise<string> {
   if (!Inside(Resolve(ProjectDir), Resolve(Path))) throw new UnsafeResourceError(`${Label}资源路径越过画板目录：${Path}`)
   let Current = Resolve(ProjectDir)
   for (const Part of Relative(Current, Resolve(Path)).split(/[\\/]/).filter(Boolean)) {
@@ -325,7 +325,7 @@ async function ReadLayout(ProjectDir: string, Item: StoredLine, Configs: Map<str
   return Layout
 }
 
-async function ReadLine(ProjectDir: string, Item: StoredLine): Promise<ArrowResource> {
+export async function ReadLine(ProjectDir: string, Item: StoredLine): Promise<ArrowResource> {
   const Reference = ValidateRelativeAsset(Item.asset, 'line')
   const Bytes = await ReadFile(await GuardedResource(ProjectDir, Resolve(ProjectDir, Reference), '箭头'))
   if (!MatchesResource(Bytes, LineFilename.exec(Basename(Reference))![2], true)) throw new Error(`箭头资源内容哈希不匹配：${Reference}`)
@@ -334,14 +334,14 @@ async function ReadLine(ProjectDir: string, Item: StoredLine): Promise<ArrowReso
   return ValidateArrow({ id: Item.id, x: 0, y: 0, width: 1, height: 1, arrow: Value.arrow }, new Set()).arrow
 }
 
-async function ReadText(ProjectDir: string, Item: StoredText): Promise<TextResource> {
+export async function ReadText(ProjectDir: string, Item: StoredText): Promise<TextResource> {
   const Reference = ValidateRelativeAsset(Item.asset, true)
   const Bytes = await ReadFile(await GuardedResource(ProjectDir, Resolve(ProjectDir, Reference), '文本'))
   if (!MatchesResource(Bytes, TextFilename.exec(Basename(Reference))![2], true)) throw new Error(`文本资源内容哈希不匹配，文件可能已损坏或被修改：${Reference}`)
   return ValidateText(ParseYaml(Bytes.toString('utf8'), '文本资源'))
 }
 
-async function AtomicWrite(Path: string, Bytes: Buffer | string, Exclusive = false, Expected?: string): Promise<void> {
+export async function AtomicWrite(Path: string, Bytes: Buffer | string, Exclusive = false, Expected?: string): Promise<void> {
   const Temporary = Join(Dirname(Path), `.${Basename(Path)}.${RandomUUID()}.tmp`)
   try {
     const FileValue = await Open(Temporary, 'wx')
@@ -357,14 +357,15 @@ async function AtomicWrite(Path: string, Bytes: Buffer | string, Exclusive = fal
         await CopyFile(Temporary, Path, FsConstants.COPYFILE_EXCL)
       }
     } else {
-      // Windows scanners may briefly hold a newly read config without delete
-      // sharing. Retry the rename, rechecking the baseline on every attempt.
+      // Windows scanners may hold a newly read config without delete sharing
+      // for more than a few hundred milliseconds. Allow 2.25s of bounded waits,
+      // rechecking the baseline before every attempt instead of forcing a write.
       for (let Attempt = 0; ; Attempt++) {
         if (Expected !== undefined && await ReadFile(Path, 'utf8') !== Expected) throw new Error(`文件在保存过程中被修改，未覆盖：${Path}`)
         try { await Rename(Temporary, Path); break }
         catch (CaughtError) {
-          if (process.platform !== 'win32' || Attempt >= 5 || !['EPERM', 'EACCES', 'EBUSY'].includes((CaughtError as NodeJS.ErrnoException)?.code ?? '')) throw CaughtError
-          await Delay(25 * (Attempt + 1))
+          if (process.platform !== 'win32' || Attempt >= 9 || !['EPERM', 'EACCES', 'EBUSY'].includes((CaughtError as NodeJS.ErrnoException)?.code ?? '')) throw CaughtError
+          await Delay(50 * (Attempt + 1))
         }
       }
     }
@@ -378,7 +379,7 @@ function Cached(Bytes: Buffer, Width: number, Height: number): DecodedImage {
   return { bytes: Bytes, asset: { id: Id, dataUrl: `data:image/png;base64,${Bytes.toString('base64')}`, width: Width, height: Height } }
 }
 
-async function NormalizeImage(Input: Uint8Array): Promise<DecodedImage> {
+export async function NormalizeImage(Input: Uint8Array): Promise<DecodedImage> {
   const Bytes = Buffer.from(Input)
   let ImageValue: Sharp.Sharp
   if (Bytes.length >= 2 && Bytes.toString('ascii', 0, 2) === 'BM') {

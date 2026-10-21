@@ -1,0 +1,6 @@
+id: LineA
+axis: vertical
+bend: 400
+color: '#F6C36A'
+thickness: 4
+dashed: true

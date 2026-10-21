@@ -113,6 +113,8 @@ Markdown 源码及字体、字号、颜色、透明度、背景、段落和内�
 
 ### Agent 写入与刷新
 
+本地 agent 可直接调用 [AgentKnowledge/HybridRef.cmd](AgentKnowledge/HybridRef.cmd)。完整命令、资源 YAML 结构、直接编辑方法和对齐计算见 [AgentKnowledge 知识库](AgentKnowledge/README.md)，示例脚本可直接运行。新增模块需同步提供 agent 接口、知识库与示例，要求见[开发说明](Code/Module/README.md#agent-接口与知识库维护)。
+
 顶部软盘按钮用于保存，环形箭头按钮用于**刷新：扫描加载元素**。两者使用 SVG 图标、相同按钮尺寸；未保存提示仍显示在保存按钮上。
 
 Agent 只需写入项目 `Resource/` 下的资源与同名 `.config`，无需编辑 `.hbr` 列表。点击刷新会从 config 的 `instances` 发现新对象，重新读取已有对象的内容与布局，并自动保存索引。原有顺序保留，新对象按文件名、配置内 ID 的顺序追加。刷新不会改写资源内容，也不会因文件缺失而删除已有引用。刷新前先保存画板修改；旧版本项目需先保存一次迁移到第 7 版。普通打开沿用已保存的索引。

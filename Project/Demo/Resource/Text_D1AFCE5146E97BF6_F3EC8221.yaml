@@ -1,0 +1,30 @@
+format: "hybridref-text"
+formatVersion: 1
+content: "# Agent 接口验证
+
+
+  图片、文本和连线均由 CLI 创建。
+
+
+  - 已验证内容、样式、位置和尺寸修改
+
+  - 文本位于图片右侧，水平间隔 80
+
+  - 连线绑定图片底边与文本左边
+
+
+  **知识库：AgentKnowledge/README.md**"
+opacity: 1
+font:
+  family: "SimHei"
+  size: 21
+  weight: 400
+  color: "#DBF4FF"
+  opacity: 1
+background:
+  color: "#19323A"
+  opacity: 1
+paragraph:
+  align: "left"
+  lineHeight: 1.4
+padding: 20

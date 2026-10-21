@@ -1,0 +1,10 @@
+id: LineA
+startBinding:
+  id: ImageA
+  side: bottom
+endBinding:
+  id: TextA
+  side: left
+color: '#FFFFFF'
+thickness: 2
+dashed: false

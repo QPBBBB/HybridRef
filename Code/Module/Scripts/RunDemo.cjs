@@ -5,10 +5,10 @@ const Root = Path.resolve(__dirname, '..')
 
 async function RunDemo() {
   await Esbuild.build({
-    absWorkingDir: Root, entryPoints: ['Scripts/CreateDemo.ts'], outfile: 'Runtime/CreateDemo.cjs',
+    absWorkingDir: Root, entryPoints: ['Scripts/CreateDemo.ts'], outfile: 'Runtime/Tools/CreateDemo.cjs',
     bundle: true, platform: 'node', format: 'cjs', target: 'node22', packages: 'external', logLevel: 'info',
   })
-  const Result = SpawnSync(process.execPath, [Path.join(Root, 'Runtime/CreateDemo.cjs')], {
+  const Result = SpawnSync(process.execPath, [Path.join(Root, 'Runtime/Tools/CreateDemo.cjs')], {
     cwd: Root, stdio: 'inherit', windowsHide: true,
   })
   if (Result.error) throw Result.error

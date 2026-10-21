@@ -1,0 +1,16 @@
+id: TextA
+x: 500
+y: 420
+width: 320
+height: 160
+text:
+  content: |-
+    # Agent 示例
+    图片、文本和连线都由命令行生成。
+  font:
+    size: 24
+    color: '#FFFFFF'
+  background:
+    color: '#202020'
+  paragraph:
+    align: left

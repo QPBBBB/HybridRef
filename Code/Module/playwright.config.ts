@@ -13,6 +13,7 @@ export default DefineConfig({
     browserName: 'chromium', channel: 'msedge', viewport: { width: 1360, height: 900 },
     screenshot: 'only-on-failure', trace: 'retain-on-failure',
   },
-  reporter: [[process.env.CI ? 'github' : 'list'], ['html', { open: 'never', outputFolder: 'Runtime/PlaywrightReport' }]],
-  outputDir: 'Runtime/TestResults',
+  reporter: [[process.env.CI ? 'github' : 'list'], ['html', { open: 'never', outputFolder: 'Runtime/Tests/Reports/Playwright' }]],
+  outputDir: 'Runtime/Tests/Results',
+  preserveOutput: 'failures-only',
 })

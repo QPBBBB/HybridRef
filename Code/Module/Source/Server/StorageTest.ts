@@ -254,7 +254,7 @@ Describe('HybridRef image and text storage', () => {
     Expect((await Store.LoadProject(Project)).document.texts[0].text.content).toBe(Document.texts[0].text.content)
   })
 
-  It('cleanup retains textures referenced only by Markdown, including a shared text resource', async () => {
+  It('cleanup retains Markdown textures, shared text resources and unindexed external files', async () => {
     const Root = Temp(), Store = new ImageStore(), Project = Join(Root, 'Markdown.hbr')
     const Png = await Sharp(await Jpeg()).png().toBuffer()
     const Texture = TextureName(Hash(Png))
@@ -265,10 +265,11 @@ Describe('HybridRef image and text storage', () => {
     const Document = TextBoard(Source)
     await Store.SaveProject(Project, Document)
     Expect(ExistsSync(Join(Root, 'Resource', Texture))).toBe(true)
-    Expect(ExistsSync(Join(Root, 'Resource/Unused.png'))).toBe(false)
+    Expect(ReadFileSync(Join(Root, 'Resource/Unused.png'))).toEqual(Png)
     const Stored = Parse(ReadFileSync(Project, 'utf8'))
     WriteFileSync(Join(Root, 'Shared.hbr'), Stringify(Stored))
     await Store.CleanupProject(Project, Board())
+    Expect(ReadFileSync(Join(Root, 'Resource/Unused.png'))).toEqual(Png)
     Expect(ExistsSync(Join(Root, 'Resource', Texture))).toBe(true)
     Expect(Parse(ReadFileSync(Join(Root, Stored.texts[0].asset), 'utf8')).content).toBe(Source)
   })
@@ -819,7 +820,11 @@ Describe('HybridRef image and text storage', () => {
     Expect(Cleaned.missingResources).toEqual(Loaded.missingResources)
     Expect(Parse(ReadFileSync(Path, 'utf8')).images).toEqual(Stored.images)
     Expect(Parse(ReadFileSync(Path, 'utf8')).texts).toEqual(Stored.texts)
-    Expect(ReaddirSync(Join(Root, 'Resource'))).toEqual([Basename(Stored.images[0].asset).replace('.png', '.config')])
+    Expect(ReaddirSync(Join(Root, 'Resource')).sort()).toEqual([
+      Basename(Stored.images[0].asset).replace('.png', '.config'), Basename(Stored.texts[0].asset).replace('.yaml', '.config'),
+    ].sort())
+    Expect(Parse(ReadFileSync(Join(Root, Stored.texts[0].asset.replace('.yaml', '.config')), 'utf8')).instances['text-1'])
+      .toEqual({ x: -10.25, y: 30.5, width: 320, height: 180 })
   })
 
   It('restores cached resources deleted after opening while preserving unindexed files and new edits', async () => {
@@ -944,8 +949,12 @@ Describe('HybridRef image and text storage', () => {
     Expect(Saved.texts.map((Item: { id: string }) => Item.id)).toEqual(['text-1', 'text-2', 'text-3', 'new-text'])
     Expect(Saved.texts[0]).toEqual(Stored.texts[0])
     Expect(Saved.texts[2]).toEqual(Stored.texts[2])
-    // An explicit file edit, including changed hidden geometry, remains the authority.
-    Saved.texts[0].x = 777
+    // In v7 the config owns hidden geometry; the index owns references/order.
+    const HiddenConfigPath = Join(Root, Saved.texts[0].asset.replace('.yaml', '.config'))
+    const HiddenConfig = Parse(ReadFileSync(HiddenConfigPath, 'utf8'))
+    HiddenConfig.instances['text-1'].x = 777
+    WriteFileSync(HiddenConfigPath, Stringify(HiddenConfig))
+    const HiddenConfigBytes = ReadFileSync(HiddenConfigPath)
     Saved.texts = Saved.texts.filter((Item: { id: string }) => Item.id !== 'text-3')
     WriteFileSync(Path, Stringify(Saved))
     // Deleting an ordinary, visible text on the canvas still removes its entry.
@@ -953,11 +962,13 @@ Describe('HybridRef image and text storage', () => {
     const Result = await Reopened.CleanupProject(Path, Loaded.document)
     const Cleaned = Parse(ReadFileSync(Path, 'utf8'))
     Expect(Cleaned.texts.map((Item: { id: string }) => Item.id)).toEqual(['text-1', 'new-text'])
-    Expect(Cleaned.texts[0]).toEqual({ ...Stored.texts[0], x: 777 })
+    Expect(Cleaned.texts[0]).toEqual(Stored.texts[0])
+    Expect(ReadFileSync(HiddenConfigPath)).toEqual(HiddenConfigBytes)
     Expect(Result.document.texts.map((Item) => Item.id)).toEqual(['new-text'])
     Expect(Result.missingResources).toEqual([Stored.texts[0].asset])
     await Reopened.SaveProject(Path, Result.document)
     Expect(Parse(ReadFileSync(Path, 'utf8')).texts).toEqual(Cleaned.texts)
+    Expect(ReadFileSync(HiddenConfigPath)).toEqual(HiddenConfigBytes)
   })
 
   It('preserves missing references during Save As and respects manual removals in the latest source project', async () => {
@@ -973,7 +984,10 @@ Describe('HybridRef image and text storage', () => {
     const Reopened = new ImageStore()
     const Loaded = await Reopened.LoadProject(Path)
     Stored.texts = Stored.texts.filter((Item: { id: string }) => Item.id !== 'deleted-text')
-    Stored.texts[0].x = 123
+    const ConfigPath = Join(Root, Stored.texts[0].asset.replace('.yaml', '.config'))
+    const Config = Parse(ReadFileSync(ConfigPath, 'utf8'))
+    Config.instances['text-1'].x = 123
+    WriteFileSync(ConfigPath, Stringify(Config))
     WriteFileSync(Path, Stringify(Stored))
     const Destination = Temp()
     const SavedAs = Join(Destination, 'Copy.hbr')
@@ -982,7 +996,11 @@ Describe('HybridRef image and text storage', () => {
     const Saved = Parse(First)
     Expect(Saved.texts).toEqual([{ ...Stored.texts[0], asset: `Resource/${Basename(Stored.texts[0].asset)}` }])
     Expect(Saved.images).toEqual([{ ...Stored.images[0], asset: `Resource/${Basename(Stored.images[0].asset)}` }])
-    Expect(ReaddirSync(Join(Destination, 'Resource'))).toEqual([Basename(Saved.images[0].asset).replace('.png', '.config')])
+    Expect(ReaddirSync(Join(Destination, 'Resource')).sort()).toEqual([
+      Basename(Saved.images[0].asset).replace('.png', '.config'), Basename(Saved.texts[0].asset).replace('.yaml', '.config'),
+    ].sort())
+    const SavedConfigPath = Join(Destination, Saved.texts[0].asset.replace('.yaml', '.config'))
+    Expect(Parse(ReadFileSync(SavedConfigPath, 'utf8')).instances['text-1']).toEqual(Config.instances['text-1'])
     await Reopened.SaveProject(SavedAs, Loaded.document)
     Expect(ReadFileSync(SavedAs, 'utf8')).toBe(First)
     const Reloaded = await new ImageStore().LoadProject(SavedAs)
@@ -1025,7 +1043,10 @@ Describe('HybridRef image and text storage', () => {
     SymlinkSync(Outside, Join(ResourceDir, 'Linked.png'), process.platform === 'win32' ? 'junction' : 'dir')
     const Stored = Parse(ReadFileSync(Path, 'utf8'))
     WriteFileSync(Join(Root, Stored.texts[0].asset), 'corrupt')
-    await Expect(Store.SaveProject(Path, Document)).rejects.toThrow('目标文本资源已损坏')
+    const IndexBefore = ReadFileSync(Path)
+    await Expect(Store.SaveProject(Path, Document)).rejects.toThrow('文本资源内容哈希不匹配')
+    Expect(ReadFileSync(Path)).toEqual(IndexBefore)
+    Expect(ReadFileSync(Join(Root, Stored.texts[0].asset), 'utf8')).toBe('corrupt')
     Expect(ExistsSync(Join(ResourceDir, 'orphan.png'))).toBe(true)
     Expect(ReadFileSync(Join(Outside, 'keep.png'))).toEqual(CollisionPngs[1])
   })
@@ -1046,7 +1067,10 @@ Describe('HybridRef image and text storage', () => {
     const Second = new ImageStore()
     const Last = TextBoard('最后一次保存')
     await Promise.all([First.SaveProject(Path, TextBoard('第一次保存')), Second.SaveProject(Path, Last)])
-    Expect(ReaddirSync(Join(Root, 'Resource'))).toHaveLength(1)
+    const Stored = Parse(ReadFileSync(Path, 'utf8'))
+    Expect(ReaddirSync(Join(Root, 'Resource')).sort()).toEqual([
+      Basename(Stored.texts[0].asset), Basename(Stored.texts[0].asset).replace('.yaml', '.config'),
+    ].sort())
     Expect((await new ImageStore().LoadProject(Path)).document).toEqual(Last)
   })
 })

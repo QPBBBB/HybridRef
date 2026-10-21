@@ -4,7 +4,7 @@ import { ImageStore } from '../Source/Server/Storage'
 import { EmptyDocument } from '../Source/Shared/Types'
 
 async function Main(): Promise<void> {
-  const Root = Resolve(__dirname, '../../..')
+  const Root = Resolve(__dirname, '../../../..')
   const Path = Resolve(Root, 'Project/Demo/Demo.hbr')
   if (ExistsSync(Path)) throw new Error('Demo.hbr already exists; user projects are never overwritten by this generator.')
   const Showcase: { boards: { items: { id: string; src?: string }[] }[] } = JSON.parse(ReadFileSync(Resolve(Root, 'Code/Resource/Demo/Showcase.citadel'), 'utf8'))

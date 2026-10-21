@@ -13,5 +13,9 @@ async function Build() {
     absWorkingDir: Root, entryPoints: ['Source/Server/Index.ts'], outfile: 'Output/Server/Index.cjs',
     bundle: true, platform: 'node', format: 'cjs', target: 'node22', packages: 'external', logLevel: 'info',
   })
+  await Esbuild.build({
+    absWorkingDir: Root, entryPoints: ['Source/Agent/Index.ts'], outfile: 'Output/Agent/Index.cjs',
+    bundle: true, platform: 'node', format: 'cjs', target: 'node22', packages: 'external', logLevel: 'info',
+  })
 }
 Build().catch(CaughtError => { console.error(CaughtError); process.exitCode = 1 })
