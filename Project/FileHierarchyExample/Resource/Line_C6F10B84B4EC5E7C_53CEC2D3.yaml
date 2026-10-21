@@ -1,0 +1,23 @@
+format: "hybridref-line"
+formatVersion: 1
+arrow:
+  start:
+    x: 0.037037037037037035
+    y: 0.9591836734693877
+  end:
+    x: 0.9629629629629629
+    y: 0.04081632653061224
+  axis: "horizontal"
+  bend: 0.3148148148148148
+  color: "#FFFFFF"
+  thickness: 2.5
+  dashed: false
+  manualBend: true
+  startBinding:
+    id: "LevelData"
+    side: "right"
+    offset: 0.5
+  endBinding:
+    id: "VegetationStorage"
+    side: "left"
+    offset: 0.5

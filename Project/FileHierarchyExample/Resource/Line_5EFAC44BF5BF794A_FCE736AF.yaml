@@ -1,0 +1,23 @@
+format: "hybridref-line"
+formatVersion: 1
+arrow:
+  start:
+    x: 0.012223251513813382
+    y: 0.04734499642317544
+  end:
+    x: 0.9877767484861866
+    y: 0.9526550035768245
+  axis: "horizontal"
+  bend: 0.496944187121547
+  color: "#FFFFFF"
+  thickness: 2.5
+  dashed: false
+  manualBend: true
+  startBinding:
+    id: "LevelData"
+    side: "right"
+    offset: 0.5
+  endBinding:
+    id: "TerrainLayer"
+    side: "left"
+    offset: 0.5

@@ -1,0 +1,23 @@
+format: "hybridref-line"
+formatVersion: 1
+arrow:
+  start:
+    x: 0.04431895699065102
+    y: 0.06248655032503225
+  end:
+    x: 0.955681043009349
+    y: 0.9375134496749677
+  axis: "horizontal"
+  bend: 0.4972300651880843
+  color: "#FFFFFF"
+  thickness: 2.5
+  dashed: false
+  manualBend: true
+  startBinding:
+    id: "LevelRoot"
+    side: "right"
+    offset: 0.5
+  endBinding:
+    id: "LevelData"
+    side: "left"
+    offset: 0.5
