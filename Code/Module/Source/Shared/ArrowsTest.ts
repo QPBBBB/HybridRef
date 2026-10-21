@@ -79,6 +79,46 @@ Describe('orthogonal arrows', () => {
       }
     }
   })
+  It.each(['left', 'right', 'top', 'bottom'] as const)('prefers one turn from the %s port with either endpoint free', (Side) => {
+    const Source = ConnectionHandles(Image).find((Handle) => Handle.binding.side === Side)!
+    const Horizontal = Side === 'left' || Side === 'right', Sign = Side === 'left' || Side === 'top' ? -1 : 1
+    for (const Distance of [12, 180]) for (const Offset of [-80, 0, 80]) for (const Reversed of [false, true]) {
+      const Free = { x: Source.point.x + (Horizontal ? Sign * Distance : Offset), y: Source.point.y + (Horizontal ? Offset : Sign * Distance) }
+      const Corner = Horizontal ? { x: Free.x, y: Source.point.y } : { x: Source.point.x, y: Free.y }
+      const Start = Reversed ? Free : Source.point, End = Reversed ? Source.point : Free
+      const Initial = CreateArrow('arrow', Start, End)
+      const Arrow = PositionArrow({ ...Initial, arrow: { ...Initial.arrow,
+        ...(Reversed ? { endBinding: Source.binding } : { startBinding: Source.binding }),
+      } }, Start, End, ArrowEndpoints(Initial).bend)
+      const Drawing = ArrowDrawing(Arrow)
+      const Expected = Offset ? [Source.point, Corner, Free] : [Source.point, Free]
+      if (Reversed) Expected.reverse()
+      Expect(Drawing.points).toHaveLength(Expected.length)
+      Drawing.points.forEach((Point, Index) => {
+        Expect(Point.x + Arrow.x).toBeCloseTo(Expected[Index].x)
+        Expect(Point.y + Arrow.y).toBeCloseTo(Expected[Index].y)
+        Expect(Point.x).toBeGreaterThanOrEqual(0); Expect(Point.x).toBeLessThanOrEqual(Arrow.width)
+        Expect(Point.y).toBeGreaterThanOrEqual(0); Expect(Point.y).toBeLessThanOrEqual(Arrow.height)
+      })
+      Expect(Number.isFinite(Drawing.handle.x) && Number.isFinite(Drawing.handle.y)).toBe(true)
+      Expect(ResolveArrowBindings([Image, Arrow])[1]).toBe(Arrow)
+    }
+  })
+  It.each(['left', 'right', 'top', 'bottom'] as const)('keeps detours and manual bends from the %s port', (Side) => {
+    const Source = ConnectionHandles(Image).find((Handle) => Handle.binding.side === Side)!
+    const Horizontal = Side === 'left' || Side === 'right', Sign = Side === 'left' || Side === 'top' ? -1 : 1
+    for (const Manual of [false, true]) {
+      const Distance = Manual ? 180 : -180
+      const End = { x: Source.point.x + (Horizontal ? Sign * Distance : 80), y: Source.point.y + (Horizontal ? 80 : Sign * Distance) }
+      const Initial = CreateArrow('arrow', Source.point, End, Horizontal ? 'horizontal' : 'vertical')
+      const Arrow = PositionArrow({ ...Initial, arrow: { ...Initial.arrow, startBinding: Source.binding, manualBend: Manual } }, Source.point, End, ArrowEndpoints(Initial).bend)
+      const Points = ArrowDrawing(Arrow).points
+      Expect(Points.length).toBeGreaterThan(3)
+      Expect((Points[1][Horizontal ? 'x' : 'y'] - Points[0][Horizontal ? 'x' : 'y']) * Sign).toBeGreaterThan(0)
+      Expect(Points[1][Horizontal ? 'y' : 'x']).toBeCloseTo(Points[0][Horizontal ? 'y' : 'x'])
+      if (Manual) Expect(ArrowEndpoints(Arrow).bend).toBeCloseTo(ArrowEndpoints(Initial).bend)
+    }
+  })
   It('keeps fixed-width arrow strokes inside their frames after a small group resize', () => {
     const Arrow = CreateArrow('arrow', { x: 0, y: 0 }, { x: 300, y: 0 })
     const Small = { ...Arrow, width: Arrow.width / 100, height: Arrow.height / 100 }

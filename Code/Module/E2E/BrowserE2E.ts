@@ -1368,6 +1368,35 @@ async function ReadArrowEndpoints(Page: Page): Promise<{ start: { x: number; y: 
   })
 }
 
+async function ReadArrowPoints(Page: Page): Promise<{ x: number; y: number }[]> {
+  return Page.getByTestId('arrow-hit').first().evaluate((Element) => {
+    const Path = Element as SVGPathElement, Coordinates = Path.getAttribute('d')!.split(' ')
+    const Points = []
+    for (let Index = 0; Index < Coordinates.length; Index += 3) {
+      const Point = new DOMPoint(Number(Coordinates[Index + 1]), Number(Coordinates[Index + 2])).matrixTransform(Path.getScreenCTM()!)
+      Points.push({ x: Point.x, y: Point.y })
+    }
+    return Points
+  })
+}
+
+Test('free arrow previews use one turn in all four drawing directions', async ({ page: Page }) => {
+  await Page.goto(ServiceUrl)
+  await Expect(Page.getByTestId('add-arrow')).toBeEnabled()
+  const Start = { x: 680, y: 450 }
+  for (const End of [{ x: 940, y: 530 }, { x: 420, y: 530 }, { x: 760, y: 710 }, { x: 760, y: 190 }]) {
+    await Page.getByTestId('add-arrow').click()
+    await Page.mouse.move(Start.x, Start.y); await Page.mouse.down()
+    await Page.mouse.move(End.x, End.y, { steps: 8 })
+    const Horizontal = Math.abs(End.x - Start.x) > Math.abs(End.y - Start.y)
+    const Points = await ReadArrowPoints(Page)
+    Expect(Points).toEqual([Start, Horizontal ? { x: End.x, y: Start.y } : { x: Start.x, y: End.y }, End])
+    await Page.mouse.up()
+    Expect(await ReadArrowPoints(Page)).toEqual(Points)
+    await Page.keyboard.press('Control+z'); await Expect(Page.getByTestId('arrow-item')).toHaveCount(0)
+  }
+})
+
 Test('arrows support orthogonal drawing, endpoint and bend editing, styles, PNG copy and persistent YAML', async ({ page: Page }) => {
   await Page.goto(ServiceUrl)
   await Expect(Page.getByTestId('add-arrow')).toBeEnabled()
@@ -1557,6 +1586,41 @@ async function OpenConnectionBoard(Page: Page): Promise<{ image: string; text: s
 function ConnectionHandle(Page: Page, Id: string, Side: string) {
   return Page.locator(`[data-testid="connection-handle"][data-item-id="${Id}"][data-side="${Side}"]`)
 }
+
+Test('all four source handles preview one turn before snapping and retain it after release and reload', async ({ page: Page }) => {
+  const Ids = await OpenConnectionBoard(Page), Image = Page.getByTestId('image-item')
+  let LastPoints: { x: number; y: number }[] = []
+  for (const Side of ['left', 'right', 'top', 'bottom']) {
+    await Image.click()
+    const Box = (await Image.boundingBox())!, Handle = (await ConnectionHandle(Page, Ids.image, Side).boundingBox())!
+    const Horizontal = Side === 'left' || Side === 'right', Sign = Side === 'left' || Side === 'top' ? -1 : 1
+    const Start = { x: Box.x + Box.width * (Side === 'left' ? 0 : Side === 'right' ? 1 : 0.5),
+      y: Box.y + Box.height * (Side === 'top' ? 0 : Side === 'bottom' ? 1 : 0.5) }
+    await Page.mouse.move(Handle.x + Handle.width / 2, Handle.y + Handle.height / 2); await Page.mouse.down()
+    // Cross both sides of the source axis while the pointer is still held down.
+    for (const Offset of [-80, 80]) {
+      const End = { x: Start.x + (Horizontal ? Sign * 100 : Offset), y: Start.y + (Horizontal ? Offset : Sign * 100) }
+      await Page.mouse.move(End.x, End.y, { steps: 8 })
+      const Points = await ReadArrowPoints(Page)
+      Expect(Points).toHaveLength(3)
+      const Expected = [Start, Horizontal ? { x: End.x, y: Start.y } : { x: Start.x, y: End.y }, End]
+      Points.forEach((Point, Index) => { Expect(Point.x).toBeCloseTo(Expected[Index].x); Expect(Point.y).toBeCloseTo(Expected[Index].y) })
+      LastPoints = Points
+    }
+    if (Side === 'bottom') await Page.screenshot({ path: Join(ModuleRoot, 'Runtime/ConnectionPreview.png') })
+    await Page.mouse.up()
+    Expect(await ReadArrowPoints(Page)).toEqual(LastPoints)
+    await Page.keyboard.press('Control+z'); await Expect(Page.getByTestId('arrow-item')).toHaveCount(0)
+    await Page.keyboard.press('Control+Shift+z'); Expect(await ReadArrowPoints(Page)).toEqual(LastPoints)
+    if (Side !== 'bottom') { await Page.keyboard.press('Control+z'); await Expect(Page.getByTestId('arrow-item')).toHaveCount(0) }
+  }
+  await Page.keyboard.press('Control+s'); await ChooseProjectName(Page, 'ConnectionPreview')
+  await Expect(Page).toHaveTitle('ConnectionPreview.hbr — HybridRef')
+  await Page.reload(); await Expect(Page.getByTestId('arrow-item')).toHaveCount(1)
+  const Reloaded = await ReadArrowPoints(Page)
+  Expect(Reloaded).toHaveLength(3)
+  Reloaded.forEach((Point, Index) => { Expect(Point.x).toBeCloseTo(LastPoints[Index].x); Expect(Point.y).toBeCloseTo(LastPoints[Index].y) })
+})
 
 Test('four handles on images and text create bound lines directly, with snapping, undo and persistence', async ({ page: Page }) => {
   const Ids = await OpenConnectionBoard(Page)

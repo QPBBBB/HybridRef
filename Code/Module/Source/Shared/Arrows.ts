@@ -11,17 +11,21 @@ function PortDirection(Binding?: ArrowBinding): ArrowPoint {
 function ArrowRoute(Arrow: ArrowResource, Start: ArrowPoint, End: ArrowPoint, Bend: number): { points: ArrowPoint[]; handle: ArrowPoint; axis: ArrowResource['axis']; bend: number } {
   const Clearance = Math.max(24, Arrow.thickness * 4)
   const StartDirection = PortDirection(Arrow.startBinding), EndDirection = PortDirection(Arrow.endBinding)
-  if (!Arrow.manualBend && Arrow.startBinding && Arrow.endBinding
+  if (!Arrow.manualBend && (Arrow.startBinding || Arrow.endBinding)
     && StartDirection.x * EndDirection.x + StartDirection.y * EndDirection.y === 0) {
-    const Horizontal = StartDirection.x !== 0
+    const Horizontal = Arrow.startBinding ? StartDirection.x !== 0 : EndDirection.y !== 0
     const Corner = Horizontal ? { x: End.x, y: Start.y } : { x: Start.x, y: End.y }
     const Departure = (Corner.x - Start.x) * StartDirection.x + (Corner.y - Start.y) * StartDirection.y
     const Arrival = (Corner.x - End.x) * EndDirection.x + (Corner.y - End.y) * EndDirection.y
-    // The two outward port rays intersect: one corner respects both directions.
-    // Keep detours for ports facing away and for explicitly dragged middle legs.
-    if (Departure > 1e-8 && Arrival > 1e-8) return {
-      points: [Start, Corner, End], handle: { x: (Corner.x + End.x) / 2, y: (Corner.y + End.y) / 2 },
-      axis: Horizontal ? 'horizontal' : 'vertical', bend: Horizontal ? Corner.x : Corner.y,
+    // A free endpoint imposes no arrival/departure direction. Prefer one turn
+    // whenever it respects the bound ports; keep detours and manual bends.
+    if ((!Arrow.startBinding || Departure > 1e-8) && (!Arrow.endBinding || Arrival > 1e-8)) {
+      const Points = [Start, Corner, End].filter((Point, Index, All) => Index === 0 || Math.hypot(Point.x - All[Index - 1].x, Point.y - All[Index - 1].y) > 1e-8)
+      const Previous = Points[Points.length - 2]
+      return {
+        points: Points, handle: { x: (Previous.x + End.x) / 2, y: (Previous.y + End.y) / 2 },
+        axis: Horizontal ? 'horizontal' : 'vertical', bend: Horizontal ? Corner.x : Corner.y,
+      }
     }
   }
   const StartLead = { x: Start.x + StartDirection.x * Clearance, y: Start.y + StartDirection.y * Clearance }

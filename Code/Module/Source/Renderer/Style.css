@@ -63,13 +63,7 @@ button:disabled { color: #595d64; cursor: default; }
 .arrow-handle-bend { border-radius: 3px; width: 10px; height: 10px; background: #82afea; border-color: white; }
 .connection-handle { position: absolute; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; transform: translate(-50%, -50%); border: 0; border-radius: 50%; background: transparent; cursor: crosshair; z-index: 3; touch-action: none; }
 .connection-handle::before { content: ''; position: absolute; width: 8px; height: 8px; border: 2px solid #82afea; border-radius: 50%; background: #fff; }
-.connection-handle svg { position: relative; width: 16px; height: 16px; fill: none; stroke: white; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; opacity: 0; pointer-events: none; }
-.connection-left svg { rotate: 180deg; }
-.connection-top svg { rotate: -90deg; }
-.connection-bottom svg { rotate: 90deg; }
 .connection-handle:hover:not(:disabled), .connection-handle.active { background: #395f8f; }
-.connection-handle:hover::before, .connection-handle.active::before { opacity: 0; }
-.connection-handle:hover svg, .connection-handle.active svg { opacity: 1; }
 .connection-handle.connecting { pointer-events: none; }
 .arrow-line-options { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; grid-column: 1 / -1; }
 .text-settings-button { position: absolute; display: grid; place-items: center; z-index: 4; padding: 3px; border-radius: 5px; }

@@ -685,7 +685,10 @@ export default function App(): React.ReactElement {
         if (Active.kind === 'arrow-create') Arrow.axis = Arrow.startBinding
           ? (['top', 'bottom'].includes(Arrow.startBinding.side) ? 'vertical' : 'horizontal')
           : Math.abs(End.x - Start.x) >= Math.abs(End.y - Start.y) ? 'horizontal' : 'vertical'
-        const Bend = Active.kind === 'arrow-create' ? (Arrow.axis === 'horizontal' ? (Start.x + End.x) / 2 : (Start.y + End.y) / 2) : Points.bend
+        const Coordinate = Arrow.axis === 'horizontal' ? 'x' : 'y'
+        const Bend = Active.kind === 'arrow-create'
+          ? Arrow.startBinding || Arrow.endBinding ? (Start[Coordinate] + End[Coordinate]) / 2 : End[Coordinate]
+          : Points.bend
         Next = PositionArrow({ ...Item, arrow: Arrow }, Start, End, Bend)
       }
       Items(Active.kind === 'arrow-create' ? [...Active.before, Next] : Active.before.map((Item) => Item.id === Next.id ? Next : Item), false)
@@ -973,11 +976,9 @@ export default function App(): React.ReactElement {
         ConnectionHandles(Item, ConnectionHandleOffset / View.zoom).map(({ handle: Handle, binding: Binding }) => {
           const Active = ConnectionTarget?.id === Item.id && ConnectionTarget.side === Binding.side
           return <button key={`${Item.id}-${Binding.side}`} data-testid="connection-handle" data-item-id={Item.id} data-side={Binding.side} data-active={Active}
-            className={`connection-handle connection-${Binding.side}${Connecting ? ' connecting' : ''}${Active ? ' active' : ''}`} aria-label={`从${{ left: '左', right: '右', top: '上', bottom: '下' }[Binding.side]}侧连接`} title="拖动创建连线"
+            className={`connection-handle${Connecting ? ' connecting' : ''}${Active ? ' active' : ''}`} aria-label={`从${{ left: '左', right: '右', top: '上', bottom: '下' }[Binding.side]}侧连接`} title="拖动创建连线"
             style={{ left: View.x + Handle.x * View.zoom, top: View.y + Handle.y * View.zoom }}
-            onPointerDown={(InputEvent) => Begin(InputEvent, Item.id, undefined, Binding)} onDoubleClick={(InputEvent) => InputEvent.stopPropagation()}>
-            <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3 8h10M8 3l5 5-5 5" /></svg>
-          </button>
+            onPointerDown={(InputEvent) => Begin(InputEvent, Item.id, undefined, Binding)} onDoubleClick={(InputEvent) => InputEvent.stopPropagation()} />
         }))}
       {SelectedArrow && ArrowControls && (['start', 'end', 'bend'] as const).map((Part) => {
         const Point = Part === 'bend' ? ArrowControls.handle : Part === 'start' ? ArrowControls.points[0] : ArrowControls.points.at(-1)!
