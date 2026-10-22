@@ -1,0 +1,17 @@
+format: "hybridref-text"
+formatVersion: 1
+content: "省去 Chunk 与 Layer 包装节点；对象 A / B / C 仍是独立对象，内部子层级不继续拆散。"
+opacity: 1
+font:
+  family: "SimHei"
+  size: 27
+  weight: 400
+  color: "#BAC2CE"
+  opacity: 1
+background:
+  color: "#0C0D0F"
+  opacity: 1
+paragraph:
+  align: "left"
+  lineHeight: 1.25
+padding: 10

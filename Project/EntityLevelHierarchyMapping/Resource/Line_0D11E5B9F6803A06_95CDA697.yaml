@@ -1,0 +1,23 @@
+format: "hybridref-line"
+formatVersion: 1
+arrow:
+  start:
+    x: 0.06896551724137931
+    y: 0.9285714285714286
+  end:
+    x: 0.9310344827586207
+    y: 0.07142857142857142
+  axis: "horizontal"
+  bend: 0.5
+  color: "#FFFFFF"
+  thickness: 2.5
+  dashed: false
+  manualBend: true
+  startBinding:
+    id: "Layer_LevelArtists"
+    side: "right"
+    offset: 0.5
+  endBinding:
+    id: "Old_LevelArtists_Build_Root"
+    side: "left"
+    offset: 0.5

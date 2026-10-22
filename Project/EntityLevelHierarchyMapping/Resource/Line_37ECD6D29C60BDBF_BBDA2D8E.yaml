@@ -1,0 +1,23 @@
+format: "hybridref-line"
+formatVersion: 1
+arrow:
+  start:
+    x: 0.9746835443037974
+    y: 0.04819277108433735
+  end:
+    x: 0.02531645569620253
+    y: 0.9518072289156626
+  axis: "horizontal"
+  bend: 0.5316455696202531
+  color: "#FFFFFF"
+  thickness: 2.5
+  dashed: false
+  manualBend: true
+  startBinding:
+    id: "ExampleEffectRoot"
+    side: "left"
+    offset: 0.5
+  endBinding:
+    id: "ExampleNewC"
+    side: "right"
+    offset: 0.5

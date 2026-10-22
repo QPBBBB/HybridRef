@@ -1,0 +1,19 @@
+format: "hybridref-text"
+formatVersion: 1
+content: "已约定的场景根节点：Vegetation System Component · Global Texture Component · Global  Clouds · Global  Background
+
+  LevelSetting 不再创建；其他未列出的节点保持现状。"
+opacity: 1
+font:
+  family: "SimHei"
+  size: 26
+  weight: 400
+  color: "#BAC2CE"
+  opacity: 1
+background:
+  color: "#0C0D0F"
+  opacity: 1
+paragraph:
+  align: "left"
+  lineHeight: 1.25
+padding: 10

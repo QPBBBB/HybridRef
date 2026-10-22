@@ -1,0 +1,17 @@
+format: "hybridref-text"
+formatVersion: 1
+content: "02  Global · 相机与公共节点"
+opacity: 1
+font:
+  family: "SimHei"
+  size: 32
+  weight: 700
+  color: "#FFFFFF"
+  opacity: 1
+background:
+  color: "#0C0D0F"
+  opacity: 1
+paragraph:
+  align: "left"
+  lineHeight: 1.25
+padding: 10

@@ -1,0 +1,17 @@
+format: "hybridref-text"
+formatVersion: 1
+content: "新 Hierarchy（根节点在右侧）"
+opacity: 1
+font:
+  family: "SimHei"
+  size: 27
+  weight: 400
+  color: "#FFFFFF"
+  opacity: 1
+background:
+  color: "#0C0D0F"
+  opacity: 1
+paragraph:
+  align: "left"
+  lineHeight: 1.25
+padding: 10

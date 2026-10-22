@@ -1,0 +1,22 @@
+format: "hybridref-line"
+formatVersion: 1
+arrow:
+  start:
+    x: 0.015050167224080268
+    y: 0.5
+  end:
+    x: 0.9849498327759197
+    y: 0.5
+  axis: "horizontal"
+  bend: 0.5
+  color: "#5EE581"
+  thickness: 3
+  dashed: true
+  startBinding:
+    id: "ExampleOldB"
+    side: "right"
+    offset: 0.5
+  endBinding:
+    id: "ExampleNewB"
+    side: "left"
+    offset: 0.5

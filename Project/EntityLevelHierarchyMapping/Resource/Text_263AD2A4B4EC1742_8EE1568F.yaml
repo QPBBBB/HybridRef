@@ -1,0 +1,17 @@
+format: "hybridref-text"
+formatVersion: 1
+content: "Occluder_Root"
+opacity: 1
+font:
+  family: "SimHei"
+  size: 23
+  weight: 400
+  color: "#000000"
+  opacity: 1
+background:
+  color: "#E8D800"
+  opacity: 1
+paragraph:
+  align: "center"
+  lineHeight: 1.25
+padding: 10

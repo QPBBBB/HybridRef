@@ -1,0 +1,17 @@
+format: "hybridref-text"
+formatVersion: 1
+content: "PipelineInstance 保持 Prefab 连接，不 Unpack。来源：Assets/Res/Common/GlobalUniformBuffer/PipelineInstance.prefab"
+opacity: 1
+font:
+  family: "SimHei"
+  size: 25
+  weight: 400
+  color: "#BAC2CE"
+  opacity: 1
+background:
+  color: "#0C0D0F"
+  opacity: 1
+paragraph:
+  align: "left"
+  lineHeight: 1.25
+padding: 10

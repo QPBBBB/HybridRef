@@ -1,0 +1,17 @@
+format: "hybridref-text"
+formatVersion: 1
+content: "待确认理解：保留对象世界变换与内部层级；除 Main Camera 外保留 Prefab 关系；Terrain / Texture 各汇入一个 Root，碰撞体与 Tile 保持独立。"
+opacity: 1
+font:
+  family: "SimHei"
+  size: 27
+  weight: 400
+  color: "#FFCA73"
+  opacity: 1
+background:
+  color: "#0C0D0F"
+  opacity: 1
+paragraph:
+  align: "left"
+  lineHeight: 1.25
+padding: 10

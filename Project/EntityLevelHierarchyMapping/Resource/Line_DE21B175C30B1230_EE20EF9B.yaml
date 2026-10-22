@@ -1,0 +1,23 @@
+format: "hybridref-line"
+formatVersion: 1
+arrow:
+  start:
+    x: 0.09876543209876543
+    y: 0.05
+  end:
+    x: 0.9012345679012346
+    y: 0.95
+  axis: "horizontal"
+  bend: 0.4691358024691358
+  color: "#FFFFFF"
+  thickness: 2.5
+  dashed: false
+  manualBend: true
+  startBinding:
+    id: "OldChunk"
+    side: "right"
+    offset: 0.5
+  endBinding:
+    id: "Layer_PCG"
+    side: "left"
+    offset: 0.5

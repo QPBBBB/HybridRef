@@ -1,0 +1,22 @@
+format: "hybridref-line"
+formatVersion: 1
+arrow:
+  start:
+    x: 0.022613065326633167
+    y: 0.5
+  end:
+    x: 0.9773869346733668
+    y: 0.5
+  axis: "horizontal"
+  bend: 0.5
+  color: "#67D6EF"
+  thickness: 3
+  dashed: true
+  startBinding:
+    id: "OldCamera"
+    side: "right"
+    offset: 0.5
+  endBinding:
+    id: "NewCamera"
+    side: "left"
+    offset: 0.5
