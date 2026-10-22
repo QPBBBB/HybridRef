@@ -1,0 +1,17 @@
+format: "hybridref-text"
+formatVersion: 1
+content: "同类 Root 汇集所有 Chunk；原对象内部层级保留。"
+opacity: 1
+font:
+  family: "SimHei"
+  size: 24
+  weight: 400
+  color: "#BAC2CE"
+  opacity: 1
+background:
+  color: "#0C0D0F"
+  opacity: 1
+paragraph:
+  align: "left"
+  lineHeight: 1.2
+padding: 10

@@ -1,0 +1,23 @@
+format: "hybridref-line"
+formatVersion: 1
+arrow:
+  start:
+    x: 0.058823529411764705
+    y: 0.12121212121212122
+  end:
+    x: 0.9411764705882353
+    y: 0.8787878787878788
+  axis: "horizontal"
+  bend: 0.5
+  color: "#FFFFFF"
+  thickness: 2.5
+  dashed: false
+  manualBend: true
+  startBinding:
+    id: "LegendObjectsLabel"
+    side: "right"
+    offset: 0.5
+  endBinding:
+    id: "ExampleNewB"
+    side: "left"
+    offset: 0.5

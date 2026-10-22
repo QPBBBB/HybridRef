@@ -1,0 +1,17 @@
+format: "hybridref-text"
+formatVersion: 1
+content: "EntityLevel → RuntimeLevel · 完整层级映射"
+opacity: 1
+font:
+  family: "SimHei"
+  size: 34
+  weight: 400
+  color: "#FFFFFF"
+  opacity: 1
+background:
+  color: "#0C0D0F"
+  opacity: 1
+paragraph:
+  align: "left"
+  lineHeight: 1.2
+padding: 10

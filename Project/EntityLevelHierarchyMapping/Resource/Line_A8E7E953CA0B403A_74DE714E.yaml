@@ -1,0 +1,23 @@
+format: "hybridref-line"
+formatVersion: 1
+arrow:
+  start:
+    x: 0.96875
+    y: 0.5
+  end:
+    x: 0.03125
+    y: 0.5
+  axis: "horizontal"
+  bend: 0.578125
+  color: "#FFFFFF"
+  thickness: 2.5
+  dashed: false
+  manualBend: true
+  startBinding:
+    id: "Subtitle"
+    side: "left"
+    offset: 0.5
+  endBinding:
+    id: "NewCamera"
+    side: "right"
+    offset: 0.5

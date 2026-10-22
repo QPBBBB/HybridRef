@@ -1,0 +1,23 @@
+format: "hybridref-line"
+formatVersion: 1
+arrow:
+  start:
+    x: 0.9646017699115044
+    y: 0.9629629629629629
+  end:
+    x: 0.035398230088495575
+    y: 0.037037037037037035
+  axis: "horizontal"
+  bend: 0.5663716814159292
+  color: "#FFFFFF"
+  thickness: 2.5
+  dashed: false
+  manualBend: true
+  startBinding:
+    id: "WrapperExplanation"
+    side: "left"
+    offset: 0.5
+  endBinding:
+    id: "LegendStatus"
+    side: "right"
+    offset: 0.5

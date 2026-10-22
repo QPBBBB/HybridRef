@@ -1,0 +1,23 @@
+format: "hybridref-line"
+formatVersion: 1
+arrow:
+  start:
+    x: 0.033582089552238806
+    y: 0.5
+  end:
+    x: 0.9664179104477612
+    y: 0.5
+  axis: "horizontal"
+  bend: 0.5
+  color: "#5EE581"
+  thickness: 3
+  dashed: true
+  manualBend: false
+  startBinding:
+    id: "Old_LevelArtists_Rock_Root"
+    side: "right"
+    offset: 0.5
+  endBinding:
+    id: "New_LevelArtists_Rock_Root"
+    side: "left"
+    offset: 0.5

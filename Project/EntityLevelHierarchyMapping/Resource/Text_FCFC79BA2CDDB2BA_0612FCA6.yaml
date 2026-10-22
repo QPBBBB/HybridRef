@@ -1,0 +1,17 @@
+format: "hybridref-text"
+formatVersion: 1
+content: "导出后 Hierarchy"
+opacity: 1
+font:
+  family: "SimHei"
+  size: 28
+  weight: 400
+  color: "#FFFFFF"
+  opacity: 1
+background:
+  color: "#0C0D0F"
+  opacity: 1
+paragraph:
+  align: "left"
+  lineHeight: 1.2
+padding: 10
